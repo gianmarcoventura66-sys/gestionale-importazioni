@@ -2,6 +2,116 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
 import { FileSpreadsheet, Search, Trash2, Download, Plus, Check, X, Upload, Package, Truck, Database, List, ShoppingCart, Settings, FolderOpen, AlertCircle, Ship, FileText, Calculator, Printer, Globe2, Anchor } from 'lucide-react';
 
+// Helper format
+const _fmtE = (n) => {
+  const num = parseFloat(n) || 0;
+  return num.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+};
+
+// === COMPONENTI SIMULATORE ===
+function SimInputGroup({ title, children }) {
+  return (
+    <div className="sim-group">
+      <div className="sim-group-title">{title}</div>
+      <div className="sim-group-body">{children}</div>
+    </div>
+  );
+}
+
+function SimInput({ label, value, baseline, step, onChange, unit, hint }) {
+  const changed = Math.abs((parseFloat(value) || 0) - (parseFloat(baseline) || 0)) > 0.00001;
+  const higher = (parseFloat(value) || 0) > (parseFloat(baseline) || 0);
+  return (
+    <div className={`sim-input-row ${changed ? (higher ? 'changed-up' : 'changed-down') : ''}`}>
+      <div className="sim-input-label">
+        <span>{label}</span>
+        {hint && <span className="sim-hint">{hint}</span>}
+      </div>
+      <div className="sim-input-ctrl">
+        <input type="number" step={step} value={value} onChange={e => onChange(parseFloat(e.target.value) || 0)} className="sim-input" />
+        {unit && <span className="sim-unit">{unit}</span>}
+      </div>
+      {changed && (
+        <div className="sim-input-diff">
+          <span className="sim-input-baseline">era: {_fmtE(baseline)}{unit}</span>
+          <span className={`sim-input-arrow ${higher ? 'up' : 'down'}`}>
+            {higher ? '▲' : '▼'} {_fmtE(Math.abs((parseFloat(value) || 0) - (parseFloat(baseline) || 0)))}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SimFormula({ label, formula, resultBase, resultSim, highlight, big }) {
+  const diff = (resultSim || 0) - (resultBase || 0);
+  const changed = Math.abs(diff) > 0.00001;
+  const cls = diff < -0.001 ? 'better' : diff > 0.001 ? 'worse' : 'same';
+  return (
+    <div className={`sim-formula ${highlight ? 'highlight' : ''} ${big ? 'big' : ''}`}>
+      <div className="sim-formula-head">
+        <span className="sim-formula-label">{label}</span>
+        <span className="sim-formula-value">
+          {changed && <span className="sim-formula-base">era € {_fmtE(resultBase)}</span>}
+          <span className={`sim-formula-sim ${cls}`}>€ {_fmtE(resultSim)}</span>
+          {changed && <span className={`sim-formula-diff ${cls}`}>{diff >= 0 ? '+' : ''}{_fmtE(diff)}</span>}
+        </span>
+      </div>
+      {formula && <div className="sim-formula-expr">{formula}</div>}
+    </div>
+  );
+}
+
+function SimChart({ scom, baselineScom }) {
+  if (!scom) return null;
+  // Componenti del costo da mostrare nel grafico
+  const components = [
+    { label: 'FOB (USD→EUR)', sim: scom.fobEur, base: baselineScom.fobEur, color: '#1976d2' },
+    { label: 'Nolo marittimo', sim: scom.noloPerPezzo, base: baselineScom.noloPerPezzo, color: '#0288d1' },
+    { label: 'Aggiust. (v.45)', sim: scom.aggPerPezzo, base: baselineScom.aggPerPezzo, color: '#00acc1' },
+    { label: 'Dazio A00', sim: scom.dazio, base: baselineScom.dazio, color: '#d32f2f' },
+    { label: 'Antidumping A30', sim: scom.antidumping, base: baselineScom.antidumping, color: '#b71c1c' },
+    { label: '9AJ', sim: scom.tassePerPezzo, base: baselineScom.tassePerPezzo, color: '#7b1fa2' },
+    { label: 'IVA B00', sim: scom.iva, base: baselineScom.iva, color: '#f57c00' },
+    { label: 'Extra nolo (art.74)', sim: scom.extraNoloPerPezzo, base: baselineScom.extraNoloPerPezzo, color: '#0097a7' },
+    { label: 'Servizi + IVA', sim: scom.serviziIvaPerPezzo, base: baselineScom.serviziIvaPerPezzo, color: '#388e3c' },
+    { label: 'Commissioni', sim: scom.commissioniPerPezzo, base: baselineScom.commissioniPerPezzo, color: '#5d4037' },
+    { label: 'PFU', sim: scom.pfuPezzo, base: baselineScom.pfuPezzo, color: '#689f38' }
+  ];
+  const maxVal = Math.max(...components.map(c => Math.max(c.sim, c.base)), 0.01);
+  const totSim = scom.costoFinale;
+  return (
+    <div className="sim-chart">
+      {components.map((c, i) => {
+        if (c.sim < 0.001 && c.base < 0.001) return null;
+        const wBase = (c.base / maxVal * 100);
+        const wSim = (c.sim / maxVal * 100);
+        const pctTot = totSim > 0 ? (c.sim / totSim * 100) : 0;
+        const changed = Math.abs(c.sim - c.base) > 0.001;
+        return (
+          <div key={i} className="sim-chart-row">
+            <div className="sim-chart-label">
+              <span className="sim-chart-dot" style={{ background: c.color }}></span>
+              {c.label}
+              <span className="sim-chart-pct">{pctTot.toFixed(1)}%</span>
+            </div>
+            <div className="sim-chart-bars">
+              {changed && <div className="sim-chart-bar baseline-bar" style={{ width: `${wBase}%` }} title={`Baseline: €${_fmtE(c.base)}`}></div>}
+              <div className="sim-chart-bar sim-bar" style={{ width: `${wSim}%`, background: c.color }} title={`Simulato: €${_fmtE(c.sim)}`}></div>
+            </div>
+            <div className="sim-chart-val">
+              €{_fmtE(c.sim)}
+              {changed && <span className={`sim-chart-diff ${c.sim > c.base ? 'worse' : 'better'}`}>
+                {c.sim > c.base ? '▲' : '▼'}{_fmtE(Math.abs(c.sim - c.base))}
+              </span>}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function GestionaleImportazioni() {
   // ===== STATO BASE =====
   const [suppliers, setSuppliers] = useState([]);
@@ -117,6 +227,236 @@ export default function GestionaleImportazioni() {
   const [activeSection, setActiveSection] = useState('catalogo');
   const [compactView, setCompactView] = useState(false); // vista compatta catalogo
   const [compareMisuraQuery, setCompareMisuraQuery] = useState(''); // ricerca misura nel confronto
+
+  // ===== SIMULATORE WHAT-IF =====
+  const [simulatorOpen, setSimulatorOpen] = useState(false);
+  const [simulatorTarget, setSimulatorTarget] = useState(null); // { type: 'item'|'bolla', data: ... }
+  const [simParams, setSimParams] = useState(null); // parametri modificati
+  const [simBaseline, setSimBaseline] = useState(null); // parametri originali (per confronto)
+
+  // Funzione PURA: calcola tutte le componenti di un pneumatico dato un set di parametri
+  // Ritorna un oggetto con tutti i "passaggi" del calcolo, formule incluse
+  const calcolaScomposizione = (item, params, contestoBolla = null) => {
+    // item: { prezzoUsd, qty, pfuFascia }
+    // params: { tassoEurUsd, noloMare, ecaSurcharge, ics2Usd, localChargeUsd,
+    //          costiSbarco, addizionaliCompMar, doganaImport, fuelSurcharge, ecaEur, ics2Eur, localChargeEur,
+    //          deliveryOrder, trasportoInterno, fuelTrasportoPct, ivaSpedizioniere,
+    //          commissioni, aggiustamento, unita9AJ, dirittoDoganale9AJ,
+    //          dazioPct, ivaPct, antidumpingPct, markup,
+    //          pfuFino7, pfu7_15, pfu15_30, pfu30_60, pfuOltre60,
+    //          qtyTotale }
+    // contestoBolla: se presente, usa qtyTotale della bolla per ripartizione, altrimenti usa item.qty o 1
+    const qtyTot = contestoBolla?.qtyTot || params.qtyTotale || item.qty || 1;
+
+    // 1) FOB
+    const fobUsd = parseFloat(item.prezzoUsd) || 0;
+    const fobEur = fobUsd / (parseFloat(params.tassoEurUsd) || 1);
+
+    // 2) Nolo USD → EUR per pezzo
+    const noloTotUsd = (parseFloat(params.noloMare) || 0) + (parseFloat(params.ecaSurcharge) || 0) + (parseFloat(params.ics2Usd) || 0) + (parseFloat(params.localChargeUsd) || 0);
+    const noloTotEur = noloTotUsd / (parseFloat(params.tassoEurUsd) || 1);
+    const noloPerPezzo = noloTotEur / qtyTot;
+
+    // 3) Aggiustamento per pezzo
+    const aggTot = parseFloat(params.aggiustamento) || 0;
+    const aggPerPezzo = aggTot / qtyTot;
+
+    // 4) Valore statistico (CIF + aggiust)
+    const valoreStatistico = fobEur + noloPerPezzo + aggPerPezzo;
+
+    // 5) Dazio + antidumping
+    const dazio = valoreStatistico * (parseFloat(params.dazioPct) || 0) / 100;
+    const antidumping = valoreStatistico * (parseFloat(params.antidumpingPct) || 0) / 100;
+
+    // 6) 9AJ per pezzo
+    const dirittoTotale9AJ = parseFloat(params.dirittoDoganale9AJ) || ((parseFloat(params.unita9AJ) || 0) * 1.0908);
+    const tassePerPezzo = dirittoTotale9AJ / qtyTot;
+
+    // 7) Base IVA e IVA
+    const baseIva = valoreStatistico + dazio + antidumping + tassePerPezzo;
+    const iva = baseIva * (parseFloat(params.ivaPct) || 0) / 100;
+
+    // 8) Extra nolo (art.74)
+    const extraNoloTot = (parseFloat(params.costiSbarco) || 0) + (parseFloat(params.addizionaliCompMar) || 0) + (parseFloat(params.doganaImport) || 0) + (parseFloat(params.fuelSurcharge) || 0) + (parseFloat(params.ecaEur) || 0) + (parseFloat(params.ics2Eur) || 0) + (parseFloat(params.localChargeEur) || 0);
+    const extraNoloPerPezzo = extraNoloTot / qtyTot;
+
+    // 9) Servizi con IVA 22%
+    const trasportoBase = parseFloat(params.trasportoInterno) || 0;
+    const fuelTrasporto = trasportoBase * (parseFloat(params.fuelTrasportoPct) || 0) / 100;
+    const serviziIvaTot = (parseFloat(params.deliveryOrder) || 0) + trasportoBase + fuelTrasporto + (parseFloat(params.ivaSpedizioniere) || 0);
+    const serviziIvaPerPezzo = serviziIvaTot / qtyTot;
+
+    // 10) Commissioni per pezzo
+    const commissioniPerPezzo = (parseFloat(params.commissioni) || 0) / qtyTot;
+
+    // 11) PFU
+    const pfuMap = { fino7: params.pfuFino7, '7_15': params.pfu7_15, '15_30': params.pfu15_30, '30_60': params.pfu30_60, oltre60: params.pfuOltre60 };
+    const pfuPezzo = parseFloat(pfuMap[item.pfuFascia]) || parseFloat(params.pfu7_15) || 0;
+
+    // 12) Costo finale
+    const costoFinale = valoreStatistico + dazio + antidumping + tassePerPezzo + iva + extraNoloPerPezzo + serviziIvaPerPezzo + commissioniPerPezzo + pfuPezzo;
+    const prezzoVendita = costoFinale * (parseFloat(params.markup) || 1);
+
+    return {
+      // Input
+      fobUsd, qtyTot,
+      // Passo 1: conversione
+      tassoEurUsd: params.tassoEurUsd, fobEur,
+      // Passo 2: nolo
+      noloTotUsd, noloTotEur, noloPerPezzo,
+      // Passo 3: aggiustamento
+      aggTot, aggPerPezzo,
+      // Passo 4: valore statistico
+      valoreStatistico,
+      // Passo 5: dazi
+      dazioPct: params.dazioPct, dazio,
+      antidumpingPct: params.antidumpingPct, antidumping,
+      // Passo 6: 9AJ
+      unita9AJ: params.unita9AJ, dirittoTotale9AJ, tassePerPezzo,
+      // Passo 7: IVA
+      baseIva, ivaPct: params.ivaPct, iva,
+      // Passo 8: extra nolo
+      extraNoloTot, extraNoloPerPezzo,
+      // Passo 9: servizi IVA
+      trasportoBase, fuelTrasporto, fuelTrasportoPct: params.fuelTrasportoPct,
+      serviziIvaTot, serviziIvaPerPezzo,
+      // Passo 10: commissioni
+      commissioniPerPezzo,
+      // Passo 11: PFU
+      pfuPezzo, pfuFascia: item.pfuFascia,
+      // Output finale
+      costoFinale, markup: params.markup, prezzoVendita
+    };
+  };
+
+  // Apre il simulatore per un articolo del catalogo
+  const openSimulatorFromItem = (item) => {
+    // Costruisco i parametri baseline dai dati attuali + valori di default chinaParams
+    // Se l'articolo ha origine CN, uso chinaParams; altrimenti uso dati "europei"
+    let baselineParams;
+    let simItem;
+    if (item.origine === 'CN') {
+      // Derivo prezzoUsd dal prezzoOriginale
+      simItem = {
+        prezzoUsd: item.prezzoOriginale || (item.prezzoEur * chinaParams.tassoEurUsd),
+        qty: item.qtyRichiesta || 1,
+        pfuFascia: item.pfuFascia || '7_15'
+      };
+      baselineParams = { ...chinaParams, qtyTotale: chinaParams.qtyTotale || simItem.qty };
+    } else {
+      // Articolo europeo: creo params compatibili con pneumatico singolo
+      simItem = {
+        prezzoUsd: item.prezzoOriginale, // in realtà è EUR ma la formula ci lavora uguale
+        qty: item.qtyRichiesta || 1,
+        pfuFascia: item.pfuFascia || '7_15'
+      };
+      baselineParams = {
+        ...chinaParams,
+        tassoEurUsd: 1, // EU = già EUR
+        // azzero tutti i costi cinesi per EU
+        noloMare: 0, ecaSurcharge: 0, ics2Usd: 0, localChargeUsd: 0,
+        costiSbarco: 0, addizionaliCompMar: 0, doganaImport: 0, fuelSurcharge: 0,
+        ecaEur: 0, ics2Eur: 0, localChargeEur: 0, deliveryOrder: 0,
+        trasportoInterno: 0, fuelTrasportoPct: 0, ivaSpedizioniere: 0,
+        commissioni: 0, aggiustamento: 0, unita9AJ: 0, dirittoDoganale9AJ: 0,
+        dazioPct: 0, ivaPct: 22, antidumpingPct: 0,
+        qtyTotale: simItem.qty
+      };
+    }
+    setSimulatorTarget({ type: 'item', data: item, simItem });
+    setSimBaseline({ ...baselineParams });
+    setSimParams({ ...baselineParams });
+    setSimulatorOpen(true);
+  };
+
+  // Apre il simulatore per una bolla intera (usa il primo articolo come campione)
+  const openSimulatorFromBolla = (bolla) => {
+    if (!bolla.calcolo || !bolla.calcolo.righe || bolla.calcolo.righe.length === 0) {
+      alert('Bolla senza articoli');
+      return;
+    }
+    const firstRiga = bolla.calcolo.righe[0];
+    const simItem = {
+      prezzoUsd: firstRiga.prezzoUsd,
+      qty: firstRiga.qty,
+      pfuFascia: firstRiga.pfuFascia
+    };
+    const baselineParams = { ...bolla.params, qtyTotale: bolla.calcolo.qtyTot };
+    setSimulatorTarget({ type: 'bolla', data: bolla, simItem });
+    setSimBaseline({ ...baselineParams });
+    setSimParams({ ...baselineParams });
+    setSimulatorOpen(true);
+  };
+
+  const closeSimulator = () => {
+    setSimulatorOpen(false);
+    setSimulatorTarget(null);
+    setSimParams(null);
+    setSimBaseline(null);
+  };
+
+  // Reset: riporta i simParams allo stato baseline
+  const resetSimulator = () => {
+    if (simBaseline) setSimParams({ ...simBaseline });
+  };
+
+  // Salva le modifiche del simulatore nei parametri reali
+  const saveSimulatorChanges = () => {
+    if (!simParams || !simulatorTarget) return;
+    if (simulatorTarget.type === 'item') {
+      // Aggiorno chinaParams con i nuovi valori (per articoli CN)
+      if (simulatorTarget.data.origine === 'CN') {
+        setChinaParams(prev => ({ ...prev, ...simParams }));
+        alert('Parametri salvati in "Import Cina". Le future bolle useranno questi valori.');
+      }
+    } else if (simulatorTarget.type === 'bolla') {
+      // Aggiorno la bolla specifica con i nuovi parametri e ricalcolo
+      const bolla = simulatorTarget.data;
+      // Ricalcolo la bolla intera con i nuovi parametri
+      const newRighe = bolla.calcolo.righe.map(r => {
+        const sc = calcolaScomposizione(
+          { prezzoUsd: r.prezzoUsd, qty: r.qty, pfuFascia: r.pfuFascia },
+          simParams,
+          { qtyTot: bolla.calcolo.qtyTot }
+        );
+        return {
+          ...r,
+          cifPerPezzo: sc.valoreStatistico,
+          dazioPerPezzo: sc.dazio,
+          antidumpingPerPezzo: sc.antidumping,
+          baseIva: sc.baseIva,
+          ivaPerPezzo: sc.iva,
+          extraNoloPerPezzo: sc.extraNoloPerPezzo,
+          serviziIvaPerPezzo: sc.serviziIvaPerPezzo,
+          commissioniPerPezzo: sc.commissioniPerPezzo,
+          tasseFissePerPezzo: sc.tassePerPezzo,
+          aggiustamentoPerPezzo: sc.aggPerPezzo,
+          pfuPezzo: sc.pfuPezzo,
+          costoFinale: sc.costoFinale,
+          prezzoVendita: sc.prezzoVendita,
+          cifTot: sc.valoreStatistico * r.qty,
+          dazioTot: sc.dazio * r.qty,
+          ivaTot: sc.iva * r.qty
+        };
+      });
+      // Ricalcolo aggregati bolla
+      const newCalcolo = {
+        ...bolla.calcolo,
+        righe: newRighe,
+        valoreStatistico: newRighe.reduce((s, r) => s + r.cifTot, 0),
+        dazioTotale: newRighe.reduce((s, r) => s + r.dazioTot, 0),
+        antidumpingTotale: newRighe.reduce((s, r) => s + r.antidumpingPerPezzo * r.qty, 0),
+        ivaTotale: newRighe.reduce((s, r) => s + r.ivaTot, 0),
+        costoTotaleImport: newRighe.reduce((s, r) => s + r.costoFinale * r.qty, 0),
+        dirittoTotale9AJ: parseFloat(simParams.dirittoDoganale9AJ) || 0
+      };
+      newCalcolo.totaleImposizioni = newCalcolo.dazioTotale + newCalcolo.antidumpingTotale + newCalcolo.dirittoTotale9AJ + newCalcolo.ivaTotale;
+      // Aggiorno lista bolle
+      setBolle(prev => prev.map(b => b.id === bolla.id ? { ...b, params: { ...simParams }, calcolo: newCalcolo } : b));
+      alert('Bolla aggiornata con i nuovi parametri');
+    }
+    closeSimulator();
+  };
 
   const fileInputRef = useRef(null);
   const chinaFileInputRef = useRef(null);
@@ -731,6 +1071,17 @@ export default function GestionaleImportazioni() {
   }, [allItems, compareMisuraQuery]);
 
   const toggleSort = (field) => setSortBy(s => ({ field, dir: s.field === field && s.dir === 'asc' ? 'desc' : 'asc' }));
+
+  // Calcolo LIVE della scomposizione: baseline e simulata
+  const simScomposizioneBaseline = useMemo(() => {
+    if (!simulatorOpen || !simBaseline || !simulatorTarget) return null;
+    return calcolaScomposizione(simulatorTarget.simItem, simBaseline);
+  }, [simulatorOpen, simBaseline, simulatorTarget]);
+
+  const simScomposizioneSimulata = useMemo(() => {
+    if (!simulatorOpen || !simParams || !simulatorTarget) return null;
+    return calcolaScomposizione(simulatorTarget.simItem, simParams);
+  }, [simulatorOpen, simParams, simulatorTarget]);
 
   const fmtEur = (n) => new Intl.NumberFormat('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
   const fmtInt = (n) => new Intl.NumberFormat('it-IT').format(n || 0);
@@ -1550,11 +1901,107 @@ export default function GestionaleImportazioni() {
         .kpi-box .val { font-size: 16px; color: #263238; font-weight: 700; font-family: 'Consolas', monospace; margin-top: 2px; }
         .kpi-box.accent .val { color: #b71c1c; }
         .kpi-box.success .val { color: #2e7d32; }
+
+        /* ===== SIMULATORE WHAT-IF ===== */
+        .sim-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 200; display: flex; align-items: stretch; justify-content: stretch; padding: 12px; }
+        .sim-modal { flex: 1; background: #f5f7fa; border: 2px solid #0d47a1; box-shadow: 0 8px 40px rgba(0,0,0,0.5); display: flex; flex-direction: column; overflow: hidden; }
+
+        /* HEADER */
+        .sim-header { background: linear-gradient(to bottom, #1976d2, #0d47a1); color: #fff; padding: 10px 16px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+        .sim-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .sim-title { font-weight: 700; font-size: 14px; letter-spacing: 0.3px; }
+        .sim-subtitle { font-size: 12px; color: #bbdefb; display: flex; align-items: center; gap: 6px; }
+        .sim-hero { display: flex; gap: 20px; margin-top: 10px; align-items: center; }
+        .sim-hero-col { display: flex; flex-direction: column; gap: 1px; }
+        .sim-hero-lbl { font-size: 10px; color: #bbdefb; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+        .sim-hero-val { font-size: 22px; font-weight: 800; font-family: 'Consolas', monospace; color: #fff; }
+        .sim-hero-val.baseline { color: #e3f2fd; }
+        .sim-hero-val.better { color: #a5d6a7; }
+        .sim-hero-val.worse { color: #ffab91; }
+        .sim-hero-val.same { color: #fff; }
+        .sim-hero-sub { font-size: 10px; color: #bbdefb; }
+        .sim-hero-sub.better { color: #a5d6a7; font-weight: 700; }
+        .sim-hero-sub.worse { color: #ffab91; font-weight: 700; }
+        .sim-hero-arrow { font-size: 28px; color: #90caf9; margin: 0 10px; }
+        .sim-close { background: #b71c1c; color: #fff; border: none; width: 32px; height: 32px; font-size: 16px; cursor: pointer; font-weight: 700; }
+        .sim-close:hover { background: #d32f2f; }
+
+        /* BODY */
+        .sim-body { flex: 1; display: grid; grid-template-columns: 400px 1fr; gap: 0; overflow: hidden; }
+        .sim-left, .sim-right { overflow-y: auto; padding: 10px; }
+        .sim-left { background: #eceff1; border-right: 2px solid #b0bec5; }
+        .sim-right { background: #fafafa; }
+        .sim-section-title { font-size: 11px; font-weight: 700; color: #0d47a1; text-transform: uppercase; letter-spacing: 0.5px; padding: 4px 6px; background: #e3f2fd; border-left: 3px solid #1976d2; margin-bottom: 8px; }
+
+        /* SIM GROUP (parametri) */
+        .sim-group { background: #fff; border: 1px solid #cfd8dc; margin-bottom: 8px; }
+        .sim-group-title { background: linear-gradient(to bottom, #eceff1, #cfd8dc); padding: 4px 8px; font-size: 10px; font-weight: 700; color: #37474f; text-transform: uppercase; border-bottom: 1px solid #90a4ae; }
+        .sim-group-body { padding: 4px; }
+
+        /* SIM INPUT */
+        .sim-input-row { display: grid; grid-template-columns: 1fr 120px; gap: 6px; padding: 4px 6px; border-bottom: 1px dashed #eceff1; align-items: center; }
+        .sim-input-row:last-child { border-bottom: none; }
+        .sim-input-row.changed-up { background: #ffebee; }
+        .sim-input-row.changed-down { background: #e8f5e9; }
+        .sim-input-label { font-size: 11px; color: #37474f; display: flex; flex-direction: column; gap: 1px; }
+        .sim-hint { font-size: 9px; color: #78909c; font-style: italic; }
+        .sim-input-ctrl { display: flex; align-items: center; gap: 3px; }
+        .sim-input { width: 80px; height: 22px; border: 1px solid #b0bec5; padding: 0 4px; font-size: 11px; font-family: 'Consolas', monospace; text-align: right; }
+        .sim-input:focus { outline: 2px solid #1976d2; border-color: #1976d2; }
+        .sim-unit { font-size: 10px; color: #546e7a; font-weight: 600; min-width: 16px; }
+        .sim-input-diff { grid-column: 1 / -1; display: flex; justify-content: space-between; font-size: 9px; padding: 2px 0 0 0; border-top: 1px dotted #b0bec5; }
+        .sim-input-baseline { color: #78909c; font-style: italic; }
+        .sim-input-arrow { font-weight: 700; font-family: 'Consolas', monospace; }
+        .sim-input-arrow.up { color: #c62828; }
+        .sim-input-arrow.down { color: #2e7d32; }
+
+        /* SIM FORMULA */
+        .sim-formula { background: #fff; border-left: 3px solid #cfd8dc; padding: 6px 10px; margin-bottom: 4px; border-top: 1px solid #eceff1; border-right: 1px solid #eceff1; border-bottom: 1px solid #eceff1; }
+        .sim-formula.highlight { border-left-color: #1976d2; background: #e3f2fd; }
+        .sim-formula.big { border-left-color: #2e7d32; background: #e8f5e9; border-width: 2px; padding: 8px 12px; }
+        .sim-formula-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+        .sim-formula-label { font-weight: 700; font-size: 12px; color: #37474f; }
+        .sim-formula.big .sim-formula-label { font-size: 14px; color: #1b5e20; }
+        .sim-formula-value { display: flex; align-items: baseline; gap: 8px; font-family: 'Consolas', monospace; }
+        .sim-formula-base { font-size: 10px; color: #90a4ae; text-decoration: line-through; }
+        .sim-formula-sim { font-size: 14px; font-weight: 700; color: #263238; }
+        .sim-formula.big .sim-formula-sim { font-size: 20px; }
+        .sim-formula-sim.better { color: #2e7d32; }
+        .sim-formula-sim.worse { color: #c62828; }
+        .sim-formula-diff { font-size: 11px; font-weight: 700; padding: 1px 5px; border-radius: 2px; }
+        .sim-formula-diff.better { background: #c8e6c9; color: #1b5e20; }
+        .sim-formula-diff.worse { background: #ffcdd2; color: #b71c1c; }
+        .sim-formula-expr { font-size: 10px; color: #546e7a; font-family: 'Consolas', monospace; margin-top: 3px; padding: 2px 4px; background: #f5f5f5; border: 1px solid #eceff1; word-break: break-word; }
+
+        /* SIM CHART */
+        .sim-chart { background: #fff; border: 1px solid #cfd8dc; padding: 8px; }
+        .sim-chart-row { display: grid; grid-template-columns: 180px 1fr 110px; gap: 8px; align-items: center; padding: 3px 4px; border-bottom: 1px dashed #eceff1; }
+        .sim-chart-row:last-child { border-bottom: none; }
+        .sim-chart-label { font-size: 11px; color: #37474f; display: flex; align-items: center; gap: 6px; font-weight: 600; }
+        .sim-chart-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+        .sim-chart-pct { font-size: 9px; color: #90a4ae; margin-left: auto; font-weight: 500; }
+        .sim-chart-bars { position: relative; height: 18px; background: #f5f5f5; border: 1px solid #eceff1; overflow: hidden; }
+        .sim-chart-bar { position: absolute; left: 0; top: 0; bottom: 0; transition: width 0.3s ease; }
+        .sim-chart-bar.baseline-bar { background: repeating-linear-gradient(45deg, #90a4ae, #90a4ae 4px, #b0bec5 4px, #b0bec5 8px); opacity: 0.5; z-index: 1; }
+        .sim-chart-bar.sim-bar { opacity: 0.9; z-index: 2; }
+        .sim-chart-val { font-size: 11px; font-family: 'Consolas', monospace; font-weight: 700; text-align: right; color: #263238; display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+        .sim-chart-diff { font-size: 9px; padding: 0 3px; }
+        .sim-chart-diff.worse { color: #c62828; }
+        .sim-chart-diff.better { color: #2e7d32; }
+
+        /* FOOTER */
+        .sim-footer { background: #eceff1; padding: 8px 14px; border-top: 1px solid #b0bec5; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; }
+
+        /* Responsive */
+        @media (max-width: 1100px) {
+          .sim-body { grid-template-columns: 1fr; }
+          .sim-left { max-height: 40vh; }
+        }
       `}</style>
 
       {/* MENU BAR */}
       <div className="menubar">
-        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v1.4</div>
+        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v1.5</div>
         <div className="menubar-item">Archivio</div>
         <div className="menubar-item">Modifica</div>
         <div className="menubar-item">Visualizza</div>
@@ -1700,6 +2147,7 @@ export default function GestionaleImportazioni() {
                           <th className="num">Dazio</th>
                           <th className="num">IVA</th>
                           <th className="num" onClick={() => toggleSort('prezzoFinale')}>P. Finale</th>
+                          <th style={{ width: 40, cursor: 'default' }}>🔍</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1731,6 +2179,11 @@ export default function GestionaleImportazioni() {
                                 {item.lastBollaId && (
                                   <span title="Prezzo aggiornato con bolla reale" style={{ fontSize: 8, marginLeft: 4, background: '#e8f5e9', color: '#1b5e20', padding: '1px 4px', border: '1px solid #66bb6a', borderRadius: 2, fontWeight: 700 }}>REALE</span>
                                 )}
+                              </td>
+                              <td style={{ textAlign: 'center', padding: 2 }} onClick={e => e.stopPropagation()}>
+                                <button className="tbtn" onClick={() => openSimulatorFromItem(item)} title="Apri simulatore What-If per vedere la scomposizione prezzo" style={{ padding: '1px 5px', height: 20, fontSize: 10 }}>
+                                  <Search size={10} />
+                                </button>
                               </td>
                             </tr>
                           );
@@ -1995,6 +2448,9 @@ export default function GestionaleImportazioni() {
                             </button>
                             <button className="tbtn" style={{ padding: '2px 8px', height: 22, fontSize: 10, background: 'linear-gradient(to bottom,#66bb6a,#388e3c)', color: '#fff', borderColor: '#2e7d32', fontWeight: 600 }} onClick={() => exportBollaExcel(b)}>
                               <FileSpreadsheet size={11} /> Excel Dettaglio
+                            </button>
+                            <button className="tbtn" style={{ padding: '2px 8px', height: 22, fontSize: 10, background: 'linear-gradient(to bottom,#42a5f5,#1565c0)', color: '#fff', borderColor: '#0d47a1', fontWeight: 600 }} onClick={() => openSimulatorFromBolla(b)} title="Simulatore What-If: modifica valori e vedi impatto">
+                              <Search size={11} /> Simulatore What-If
                             </button>
                             <button className="tbtn danger" style={{ padding: '2px 8px', height: 22, fontSize: 10 }} onClick={() => deleteBolla(b.id)}>
                               <Trash2 size={10} />
@@ -2591,6 +3047,236 @@ export default function GestionaleImportazioni() {
                   )}
                   <button className="tbtn success" onClick={confirmChinaImport}><Check size={12} /> Conferma e Salva Bolla</button>
                 </>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== SIMULATORE WHAT-IF ===== */}
+      {simulatorOpen && simScomposizioneBaseline && simScomposizioneSimulata && (
+        <div className="sim-overlay" onClick={closeSimulator}>
+          <div className="sim-modal" onClick={e => e.stopPropagation()}>
+            {/* HEADER */}
+            <div className="sim-header">
+              <div>
+                <div className="sim-title-row">
+                  <Search size={16} style={{ color: '#1976d2' }} />
+                  <span className="sim-title">SIMULATORE WHAT-IF — Scomposizione Prezzo</span>
+                  {simulatorTarget.type === 'item' && (
+                    <span className="sim-subtitle">
+                      {simulatorTarget.data.marca} {simulatorTarget.data.modello && '· ' + simulatorTarget.data.modello} {simulatorTarget.data.misura && '· ' + simulatorTarget.data.misura}
+                      <span className={`tag-origine ${simulatorTarget.data.origine}`} style={{ marginLeft: 8 }}>{simulatorTarget.data.origine}</span>
+                    </span>
+                  )}
+                  {simulatorTarget.type === 'bolla' && (
+                    <span className="sim-subtitle">Bolla Doganale · {simulatorTarget.data.params.fornitore} · {simulatorTarget.data.calcolo.qtyTot} pz</span>
+                  )}
+                </div>
+                <div className="sim-hero">
+                  <div className="sim-hero-col">
+                    <span className="sim-hero-lbl">Costo BASELINE</span>
+                    <span className="sim-hero-val baseline">€ {fmtEur(simScomposizioneBaseline.costoFinale)}</span>
+                    <span className="sim-hero-sub">× {simulatorTarget.simItem.qty} pz = € {fmtEur(simScomposizioneBaseline.costoFinale * simulatorTarget.simItem.qty)}</span>
+                  </div>
+                  <div className="sim-hero-arrow">→</div>
+                  <div className="sim-hero-col">
+                    <span className="sim-hero-lbl">Costo SIMULATO</span>
+                    <span className={`sim-hero-val ${simScomposizioneSimulata.costoFinale < simScomposizioneBaseline.costoFinale ? 'better' : simScomposizioneSimulata.costoFinale > simScomposizioneBaseline.costoFinale ? 'worse' : 'same'}`}>
+                      € {fmtEur(simScomposizioneSimulata.costoFinale)}
+                    </span>
+                    <span className="sim-hero-sub">× {simulatorTarget.simItem.qty} pz = € {fmtEur(simScomposizioneSimulata.costoFinale * simulatorTarget.simItem.qty)}</span>
+                  </div>
+                  <div className="sim-hero-col">
+                    <span className="sim-hero-lbl">DIFFERENZA</span>
+                    {(() => {
+                      const diff = simScomposizioneSimulata.costoFinale - simScomposizioneBaseline.costoFinale;
+                      const pct = simScomposizioneBaseline.costoFinale > 0 ? (diff / simScomposizioneBaseline.costoFinale * 100) : 0;
+                      const cls = diff < -0.001 ? 'better' : diff > 0.001 ? 'worse' : 'same';
+                      return (
+                        <>
+                          <span className={`sim-hero-val ${cls}`}>{diff >= 0 ? '+' : ''}€ {fmtEur(Math.abs(diff))}</span>
+                          <span className={`sim-hero-sub ${cls}`}>{diff >= 0 ? '+' : '-'}{Math.abs(pct).toFixed(2)}%</span>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </div>
+              <button className="sim-close" onClick={closeSimulator}>✕</button>
+            </div>
+
+            {/* BODY: 2 colonne */}
+            <div className="sim-body">
+              {/* COLONNA SX: Parametri */}
+              <div className="sim-left">
+                <div className="sim-section-title">⚙️ PARAMETRI MODIFICABILI</div>
+
+                <SimInputGroup title="Cambio & Quantità">
+                  <SimInput label="Tasso EUR/USD" value={simParams.tassoEurUsd} baseline={simBaseline.tassoEurUsd} step={0.0001} onChange={v => setSimParams(p => ({ ...p, tassoEurUsd: v }))} unit="" hint="Cambio doganale USD→EUR" />
+                  <SimInput label="Qtà totale bolla" value={simParams.qtyTotale} baseline={simBaseline.qtyTotale} step={1} onChange={v => setSimParams(p => ({ ...p, qtyTotale: v }))} unit="pz" hint="Ripartisce costi fissi" />
+                </SimInputGroup>
+
+                <SimInputGroup title="Nolo Marittimo (USD)">
+                  <SimInput label="Nolo mare USD" value={simParams.noloMare} baseline={simBaseline.noloMare} step={10} onChange={v => setSimParams(p => ({ ...p, noloMare: v }))} unit="$" />
+                  <SimInput label="ECA Surcharge USD" value={simParams.ecaSurcharge} baseline={simBaseline.ecaSurcharge} step={1} onChange={v => setSimParams(p => ({ ...p, ecaSurcharge: v }))} unit="$" />
+                  <SimInput label="ICS2 USD" value={simParams.ics2Usd} baseline={simBaseline.ics2Usd} step={1} onChange={v => setSimParams(p => ({ ...p, ics2Usd: v }))} unit="$" />
+                </SimInputGroup>
+
+                <SimInputGroup title="Extra Nolo EUR (art.74)">
+                  <SimInput label="THC Sbarco" value={simParams.costiSbarco} baseline={simBaseline.costiSbarco} step={5} onChange={v => setSimParams(p => ({ ...p, costiSbarco: v }))} unit="€" />
+                  <SimInput label="Addizionali Comp.Mar." value={simParams.addizionaliCompMar} baseline={simBaseline.addizionaliCompMar} step={5} onChange={v => setSimParams(p => ({ ...p, addizionaliCompMar: v }))} unit="€" />
+                  <SimInput label="Dogana Import" value={simParams.doganaImport} baseline={simBaseline.doganaImport} step={5} onChange={v => setSimParams(p => ({ ...p, doganaImport: v }))} unit="€" />
+                  <SimInput label="Fuel Surcharge EUR" value={simParams.fuelSurcharge} baseline={simBaseline.fuelSurcharge} step={1} onChange={v => setSimParams(p => ({ ...p, fuelSurcharge: v }))} unit="€" />
+                </SimInputGroup>
+
+                <SimInputGroup title="Trasporto Interno (IVA 22%)">
+                  <SimInput label="Delivery Order" value={simParams.deliveryOrder} baseline={simBaseline.deliveryOrder} step={5} onChange={v => setSimParams(p => ({ ...p, deliveryOrder: v }))} unit="€" />
+                  <SimInput label="Trasporto Interno" value={simParams.trasportoInterno} baseline={simBaseline.trasportoInterno} step={10} onChange={v => setSimParams(p => ({ ...p, trasportoInterno: v }))} unit="€" hint="Base, senza fuel" />
+                  <SimInput label="Fuel Trasporto" value={simParams.fuelTrasportoPct} baseline={simBaseline.fuelTrasportoPct} step={0.5} onChange={v => setSimParams(p => ({ ...p, fuelTrasportoPct: v }))} unit="%" />
+                </SimInputGroup>
+
+                <SimInputGroup title="Imposizioni Doganali">
+                  <SimInput label="Dazio" value={simParams.dazioPct} baseline={simBaseline.dazioPct} step={0.1} onChange={v => setSimParams(p => ({ ...p, dazioPct: v }))} unit="%" hint="A00 – TARIC 4011.10" />
+                  <SimInput label="Antidumping" value={simParams.antidumpingPct} baseline={simBaseline.antidumpingPct} step={0.5} onChange={v => setSimParams(p => ({ ...p, antidumpingPct: v }))} unit="%" hint="A30 (se applicabile)" />
+                  <SimInput label="IVA" value={simParams.ivaPct} baseline={simBaseline.ivaPct} step={0.5} onChange={v => setSimParams(p => ({ ...p, ivaPct: v }))} unit="%" hint="B00" />
+                  <SimInput label="Unità 9AJ" value={simParams.unita9AJ} baseline={simBaseline.unita9AJ} step={1} onChange={v => setSimParams(p => ({ ...p, unita9AJ: v, dirittoDoganale9AJ: Math.round(v * 1.0908 * 100) / 100 }))} unit="pz" hint={`× 1,0908 = € ${fmtEur((simParams.unita9AJ || 0) * 1.0908)}`} />
+                  <SimInput label="Aggiustamento v.45" value={simParams.aggiustamento} baseline={simBaseline.aggiustamento} step={1} onChange={v => setSimParams(p => ({ ...p, aggiustamento: v }))} unit="€" />
+                </SimInputGroup>
+
+                <SimInputGroup title="PFU & Markup">
+                  <SimInput label="PFU fino 7'' (auto piccole)" value={simParams.pfuFino7} baseline={simBaseline.pfuFino7} step={0.05} onChange={v => setSimParams(p => ({ ...p, pfuFino7: v }))} unit="€" />
+                  <SimInput label="PFU 7-15'' (auto medie)" value={simParams.pfu7_15} baseline={simBaseline.pfu7_15} step={0.05} onChange={v => setSimParams(p => ({ ...p, pfu7_15: v }))} unit="€" />
+                  <SimInput label="PFU 15-30'' (SUV)" value={simParams.pfu15_30} baseline={simBaseline.pfu15_30} step={0.05} onChange={v => setSimParams(p => ({ ...p, pfu15_30: v }))} unit="€" />
+                  <SimInput label="Markup vendita" value={simParams.markup} baseline={simBaseline.markup} step={0.05} onChange={v => setSimParams(p => ({ ...p, markup: v }))} unit="×" hint="1,45 = +45% ricarico" />
+                  <SimInput label="Commissioni tot" value={simParams.commissioni} baseline={simBaseline.commissioni} step={10} onChange={v => setSimParams(p => ({ ...p, commissioni: v }))} unit="€" />
+                </SimInputGroup>
+              </div>
+
+              {/* COLONNA DX: Scomposizione con formule e grafico */}
+              <div className="sim-right">
+                <div className="sim-section-title">📊 SCOMPOSIZIONE COSTO / PEZZO</div>
+
+                <SimFormula
+                  label="1. FOB USD → EUR"
+                  formula={`$${fmtEur(simScomposizioneSimulata.fobUsd)} ÷ ${parseFloat(simParams.tassoEurUsd).toFixed(4)}`}
+                  resultBase={simScomposizioneBaseline.fobEur}
+                  resultSim={simScomposizioneSimulata.fobEur}
+                />
+
+                <SimFormula
+                  label="2. Nolo /pz"
+                  formula={`($${fmtEur(simScomposizioneSimulata.noloTotUsd)} ÷ ${parseFloat(simParams.tassoEurUsd).toFixed(4)}) ÷ ${simScomposizioneSimulata.qtyTot} pz`}
+                  resultBase={simScomposizioneBaseline.noloPerPezzo}
+                  resultSim={simScomposizioneSimulata.noloPerPezzo}
+                />
+
+                <SimFormula
+                  label="3. Aggiustamento /pz"
+                  formula={`€${fmtEur(simScomposizioneSimulata.aggTot)} ÷ ${simScomposizioneSimulata.qtyTot} pz`}
+                  resultBase={simScomposizioneBaseline.aggPerPezzo}
+                  resultSim={simScomposizioneSimulata.aggPerPezzo}
+                />
+
+                <SimFormula
+                  label="= VALORE STATISTICO (v.46)"
+                  formula={`FOB + Nolo + Aggiust = ${fmtEur(simScomposizioneSimulata.fobEur)} + ${fmtEur(simScomposizioneSimulata.noloPerPezzo)} + ${fmtEur(simScomposizioneSimulata.aggPerPezzo)}`}
+                  resultBase={simScomposizioneBaseline.valoreStatistico}
+                  resultSim={simScomposizioneSimulata.valoreStatistico}
+                  highlight
+                />
+
+                <SimFormula
+                  label={`4. Dazio A00 (${simParams.dazioPct}%)`}
+                  formula={`${fmtEur(simScomposizioneSimulata.valoreStatistico)} × ${simParams.dazioPct}%`}
+                  resultBase={simScomposizioneBaseline.dazio}
+                  resultSim={simScomposizioneSimulata.dazio}
+                />
+
+                {simParams.antidumpingPct > 0 && (
+                  <SimFormula
+                    label={`5. Antidumping A30 (${simParams.antidumpingPct}%)`}
+                    formula={`${fmtEur(simScomposizioneSimulata.valoreStatistico)} × ${simParams.antidumpingPct}%`}
+                    resultBase={simScomposizioneBaseline.antidumping}
+                    resultSim={simScomposizioneSimulata.antidumping}
+                  />
+                )}
+
+                <SimFormula
+                  label="6. 9AJ /pz"
+                  formula={`${simParams.unita9AJ || 0} × 1,0908€ ÷ ${simScomposizioneSimulata.qtyTot} pz`}
+                  resultBase={simScomposizioneBaseline.tassePerPezzo}
+                  resultSim={simScomposizioneSimulata.tassePerPezzo}
+                />
+
+                <SimFormula
+                  label={`7. IVA B00 (${simParams.ivaPct}%)`}
+                  formula={`(${fmtEur(simScomposizioneSimulata.valoreStatistico)} + ${fmtEur(simScomposizioneSimulata.dazio)} + ${fmtEur(simScomposizioneSimulata.antidumping)} + ${fmtEur(simScomposizioneSimulata.tassePerPezzo)}) × ${simParams.ivaPct}%`}
+                  resultBase={simScomposizioneBaseline.iva}
+                  resultSim={simScomposizioneSimulata.iva}
+                />
+
+                <SimFormula
+                  label="8. Extra nolo art.74 /pz"
+                  formula={`€${fmtEur(simScomposizioneSimulata.extraNoloTot)} ÷ ${simScomposizioneSimulata.qtyTot} pz (THC + Dogana + Fuel + Addiz.)`}
+                  resultBase={simScomposizioneBaseline.extraNoloPerPezzo}
+                  resultSim={simScomposizioneSimulata.extraNoloPerPezzo}
+                />
+
+                <SimFormula
+                  label="9. Servizi con IVA /pz"
+                  formula={`(€${fmtEur(simParams.deliveryOrder)} + €${fmtEur(simParams.trasportoInterno)} + €${fmtEur(simScomposizioneSimulata.fuelTrasporto)} fuel${simParams.fuelTrasportoPct}% + €${fmtEur(simParams.ivaSpedizioniere || 0)}) ÷ ${simScomposizioneSimulata.qtyTot}`}
+                  resultBase={simScomposizioneBaseline.serviziIvaPerPezzo}
+                  resultSim={simScomposizioneSimulata.serviziIvaPerPezzo}
+                />
+
+                <SimFormula
+                  label="10. Commissioni /pz"
+                  formula={`€${fmtEur(simParams.commissioni || 0)} ÷ ${simScomposizioneSimulata.qtyTot} pz`}
+                  resultBase={simScomposizioneBaseline.commissioniPerPezzo}
+                  resultSim={simScomposizioneSimulata.commissioniPerPezzo}
+                />
+
+                <SimFormula
+                  label={`11. PFU (${simulatorTarget.simItem.pfuFascia})`}
+                  formula={`Fisso per fascia diametro`}
+                  resultBase={simScomposizioneBaseline.pfuPezzo}
+                  resultSim={simScomposizioneSimulata.pfuPezzo}
+                />
+
+                <SimFormula
+                  label="= COSTO FINALE /pz"
+                  formula="Somma di tutte le voci"
+                  resultBase={simScomposizioneBaseline.costoFinale}
+                  resultSim={simScomposizioneSimulata.costoFinale}
+                  big
+                />
+
+                <SimFormula
+                  label={`= PREZZO VENDITA (×${simParams.markup})`}
+                  formula={`Costo finale × markup ${simParams.markup}`}
+                  resultBase={simScomposizioneBaseline.prezzoVendita}
+                  resultSim={simScomposizioneSimulata.prezzoVendita}
+                  big
+                />
+
+                {/* GRAFICO a barre orizzontali: componenti del costo */}
+                <div className="sim-section-title" style={{ marginTop: 12 }}>📈 COMPOSIZIONE COSTO — grafico a barre</div>
+                <SimChart scom={simScomposizioneSimulata} baselineScom={simScomposizioneBaseline} />
+              </div>
+            </div>
+
+            {/* FOOTER */}
+            <div className="sim-footer">
+              <div style={{ fontSize: 11, color: '#546e7a' }}>
+                💡 <b>Valori temporanei</b>: modifiche attive solo in questa finestra. Per applicarle definitivamente usa "Salva Modifiche".
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="tbtn" onClick={resetSimulator}><X size={12} /> Reset Baseline</button>
+                <button className="tbtn" onClick={closeSimulator}>Chiudi senza salvare</button>
+                <button className="tbtn success" onClick={saveSimulatorChanges}>
+                  <Check size={12} /> Salva Modifiche {simulatorTarget.type === 'bolla' ? 'nella Bolla' : 'nei Parametri'}
+                </button>
               </div>
             </div>
           </div>
