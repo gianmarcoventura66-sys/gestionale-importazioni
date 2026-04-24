@@ -230,6 +230,11 @@ export default function GestionaleImportazioni() {
   const [openMenu, setOpenMenu] = useState(null); // 'archivio'|'modifica'|'visualizza'|'strumenti'|'help'
   const [showGuideModal, setShowGuideModal] = useState(false);
   const paramsFileInputRef = useRef(null);
+  // Tab fornitore attiva nel catalogo: 'all' | 'eu' | supplier.id
+  const [activeCatalogTab, setActiveCatalogTab] = useState('all');
+  // Parametri per-fornitore (override dei globali chinaParams)
+  // Struttura: { [supplierId]: { useGlobal: bool, params: {...} } }
+  const [supplierParams, setSupplierParams] = useState({});
 
   // ===== SIMULATORE WHAT-IF =====
   const [simulatorOpen, setSimulatorOpen] = useState(false);
@@ -474,6 +479,7 @@ export default function GestionaleImportazioni() {
       try { const b = await window.storage.get('bolle'); if (b) setBolle(JSON.parse(b.value)); } catch (e) {}
       try { const cp = await window.storage.get('chinaParams'); if (cp) setChinaParams(prev => ({ ...prev, ...JSON.parse(cp.value) })); } catch (e) {}
       try { const cv = await window.storage.get('compactView'); if (cv) setCompactView(cv.value === 'true'); } catch (e) {}
+      try { const sp = await window.storage.get('supplierParams'); if (sp) setSupplierParams(JSON.parse(sp.value)); } catch (e) {}
       setLoading(false);
     })();
   }, []);
@@ -485,6 +491,7 @@ export default function GestionaleImportazioni() {
   useEffect(() => { if (!loading) window.storage.set('bolle', JSON.stringify(bolle)).catch(() => {}); }, [bolle, loading]);
   useEffect(() => { if (!loading) window.storage.set('chinaParams', JSON.stringify(chinaParams)).catch(() => {}); }, [chinaParams, loading]);
   useEffect(() => { if (!loading) window.storage.set('compactView', String(compactView)).catch(() => {}); }, [compactView, loading]);
+  useEffect(() => { if (!loading) window.storage.set('supplierParams', JSON.stringify(supplierParams)).catch(() => {}); }, [supplierParams, loading]);
 
   // Auto-ricalcola 9AJ quando cambiano le unità (solo se le unità sono > 0)
   useEffect(() => {
@@ -934,6 +941,25 @@ export default function GestionaleImportazioni() {
       alert('Selezionare almeno un articolo di origine Cina dal catalogo');
       return;
     }
+    // Se tutti gli articoli sono dello stesso fornitore, uso i suoi parametri
+    const supplierIds = [...new Set(cnSelected.map(i => i.supplierId))];
+    let baseParams = { ...chinaParams };
+    let supplierName = chinaParams.fornitore;
+    if (supplierIds.length === 1) {
+      // Un solo fornitore: uso i suoi parametri specifici
+      const eff = getEffectiveParams(supplierIds[0]);
+      baseParams = { ...eff };
+      const sup = suppliers.find(s => s.id === supplierIds[0]);
+      if (sup) supplierName = sup.name;
+    } else if (supplierIds.length > 1) {
+      const ok = confirm(`Selezione da ${supplierIds.length} fornitori diversi: ${supplierIds.map(id => suppliers.find(s => s.id === id)?.name || id).join(', ')}\n\nI parametri bolla usati saranno quelli del primo fornitore. Continuare?`);
+      if (!ok) return;
+      const eff = getEffectiveParams(supplierIds[0]);
+      baseParams = { ...eff };
+      const sup = suppliers.find(s => s.id === supplierIds[0]);
+      if (sup) supplierName = sup.name;
+    }
+
     // Converto gli item selezionati nel formato chinaItems
     const items = cnSelected.map((it, idx) => {
       const qty = it.qtyRichiesta || 1;
@@ -951,38 +977,22 @@ export default function GestionaleImportazioni() {
       }
       return {
         idx, marca: it.marca, modello: it.modello, misura: it.misura,
-        qty, prezzoUsd: it.prezzoOriginale || (it.prezzoEur * chinaParams.tassoEurUsd),
+        qty, prezzoUsd: it.prezzoOriginale || (it.prezzoEur * baseParams.tassoEurUsd),
         pfuFascia
       };
     });
     const totalQty = items.reduce((s, i) => s + i.qty, 0);
-    // Auto-suggerisci preset nolo: se >= ~300 pz 40' HC, altrimenti 20'
-    const suggestedPreset = totalQty >= 300 ? 'hcm_40' : 'hcm_20';
-    const preset = NOLO_PRESETS[suggestedPreset];
 
     setBollaMode('selection');
-    setNoloPreset(suggestedPreset);
+    setNoloPreset(baseParams.noloPreset || 'hcm_40');
     setChinaItems(items);
 
-    const firstSup = cnSelected[0].supplierName || chinaParams.fornitore;
-    // Un unico setState con tutti i preset applicati contemporaneamente
+    // Uso i parametri del fornitore come base
     setChinaParams(prev => ({
-      ...prev,
-      fornitore: firstSup,
+      ...baseParams,
+      fornitore: supplierName,
       qtyTotale: totalQty,
-      unita9AJ: prev.unita9AJ || 4,
-      // Preset nolo USD
-      noloMare: preset.noloMare,
-      fuelSurcharge: preset.fuelSurcharge,
-      ics2Usd: preset.ics2Usd,
-      ecaSurcharge: preset.ecaSurcharge,
-      // Costi fissi SDB EUR
-      costiSbarco: COSTI_SDB.thcSbarco,
-      addizionaliCompMar: COSTI_SDB.addizionaliCompMar,
-      deliveryOrder: COSTI_SDB.deliveryOrder,
-      doganaImport: COSTI_SDB.doganaImport,
-      trasportoInterno: COSTI_SDB.trasportoInterno,
-      fuelTrasportoPct: COSTI_SDB.fuelTrasportoPct
+      unita9AJ: baseParams.unita9AJ || 4
     }));
     setChinaStep('parameters');
   };
@@ -1022,6 +1032,10 @@ export default function GestionaleImportazioni() {
   const filteredItems = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
     let list = allItems.filter(i => {
+      // Filtro tab attiva
+      if (activeCatalogTab === 'eu' && i.origine !== 'EU') return false;
+      if (activeCatalogTab !== 'all' && activeCatalogTab !== 'eu' && i.supplierId !== activeCatalogTab) return false;
+      // Filtri normali
       if (filterOrigine && i.origine !== filterOrigine) return false;
       if (filterSupplier && i.supplierId !== filterSupplier) return false;
       if (filterMarca && i.marca !== filterMarca) return false;
@@ -1029,36 +1043,54 @@ export default function GestionaleImportazioni() {
       return i.marca.toLowerCase().includes(q) || (i.modello || '').toLowerCase().includes(q) || (i.misura || '').toLowerCase().includes(q);
     });
     list.sort((a, b) => {
-      let av = a[sortBy.field], bv = b[sortBy.field];
+      // Per ordinare su prezzoFinale usa quello calcolato live (scomposizione) per CN
+      let av, bv;
+      if (sortBy.field === 'prezzoFinale' && a.origine === 'CN' && scomposizioneCatalogo[a.id]) {
+        av = scomposizioneCatalogo[a.id].costoFinale;
+      } else {
+        av = a[sortBy.field];
+      }
+      if (sortBy.field === 'prezzoFinale' && b.origine === 'CN' && scomposizioneCatalogo[b.id]) {
+        bv = scomposizioneCatalogo[b.id].costoFinale;
+      } else {
+        bv = b[sortBy.field];
+      }
       if (typeof av === 'string') { av = av.toLowerCase(); bv = (bv || '').toLowerCase(); }
       if (av < bv) return sortBy.dir === 'asc' ? -1 : 1;
       if (av > bv) return sortBy.dir === 'asc' ? 1 : -1;
       return 0;
     });
     return list;
-  }, [allItems, searchQuery, filterSupplier, filterMarca, filterOrigine, sortBy]);
+  }, [allItems, searchQuery, filterSupplier, filterMarca, filterOrigine, sortBy, activeCatalogTab, scomposizioneCatalogo]);
 
   const totaleSelezione = useMemo(() => selectedItems.reduce((s, i) => s + i.prezzoFinale * i.qtyRichiesta, 0), [selectedItems]);
   const qtyTotale = useMemo(() => selectedItems.reduce((s, i) => s + i.qtyRichiesta, 0), [selectedItems]);
 
-  // Confronto fornitori: raggruppa per misura, ordina per prezzo finale crescente
+  // Confronto fornitori: raggruppa per misura, ordina per prezzo finale LIVE crescente
   const comparisonData = useMemo(() => {
     if (allItems.length === 0) return [];
     const map = new Map();
     const q = compareMisuraQuery.toLowerCase().trim();
+    // Prezzo "effettivo": per CN usa scomposizione live, per EU usa prezzoFinale
+    const getPrezzo = (it) => {
+      if (it.origine === 'CN' && scomposizioneCatalogo[it.id]) {
+        return scomposizioneCatalogo[it.id].costoFinale;
+      }
+      return parseFloat(it.prezzoFinale) || 0;
+    };
     for (const it of allItems) {
       const mis = (it.misura || '').trim();
       if (!mis) continue;
       if (q && !mis.toLowerCase().includes(q) && !(it.marca || '').toLowerCase().includes(q)) continue;
       if (!map.has(mis)) map.set(mis, []);
-      map.get(mis).push(it);
+      map.get(mis).push({ ...it, _prezzoEffettivo: getPrezzo(it) });
     }
-    // Ordina ogni gruppo per prezzoFinale crescente
+    // Ordina ogni gruppo per prezzo effettivo crescente
     const groups = [];
     for (const [misura, items] of map.entries()) {
-      items.sort((a, b) => a.prezzoFinale - b.prezzoFinale);
-      const min = items[0]?.prezzoFinale || 0;
-      const max = items[items.length - 1]?.prezzoFinale || 0;
+      items.sort((a, b) => a._prezzoEffettivo - b._prezzoEffettivo);
+      const min = items[0]?._prezzoEffettivo || 0;
+      const max = items[items.length - 1]?._prezzoEffettivo || 0;
       const savings = min > 0 ? ((max - min) / max * 100) : 0;
       const suppliers = new Set(items.map(i => i.supplierName));
       groups.push({
@@ -1071,9 +1103,65 @@ export default function GestionaleImportazioni() {
     // Ordina gruppi per numero di fornitori (più fornitori = più scelta) e poi per misura
     groups.sort((a, b) => b.suppliersCount - a.suppliersCount || a.misura.localeCompare(b.misura));
     return groups;
-  }, [allItems, compareMisuraQuery]);
+  }, [allItems, compareMisuraQuery, scomposizioneCatalogo]);
 
   const toggleSort = (field) => setSortBy(s => ({ field, dir: s.field === field && s.dir === 'asc' ? 'desc' : 'asc' }));
+
+  // ===== GESTIONE PARAMETRI PER-FORNITORE =====
+  // Ritorna i parametri effettivi di un fornitore (suoi o globali se useGlobal)
+  const getEffectiveParams = (supplierId) => {
+    const sp = supplierParams[supplierId];
+    if (!sp || sp.useGlobal) return chinaParams;
+    return { ...chinaParams, ...sp.params };
+  };
+
+  // Aggiorna un singolo parametro per un fornitore (disattiva useGlobal)
+  const updateSupplierParam = (supplierId, key, value) => {
+    setSupplierParams(prev => ({
+      ...prev,
+      [supplierId]: {
+        useGlobal: false,
+        params: { ...(prev[supplierId]?.params || chinaParams), [key]: value }
+      }
+    }));
+  };
+
+  // Ripristina un fornitore ai parametri globali
+  const resetSupplierToGlobal = (supplierId) => {
+    if (!confirm('Ripristinare i parametri globali per questo fornitore?')) return;
+    setSupplierParams(prev => ({
+      ...prev,
+      [supplierId]: { useGlobal: true, params: {} }
+    }));
+  };
+
+  // Applica preset nolo a un fornitore specifico
+  const applyPresetToSupplier = (supplierId, presetKey) => {
+    const preset = NOLO_PRESETS[presetKey];
+    if (!preset) return;
+    const base = supplierParams[supplierId]?.useGlobal === false
+      ? { ...supplierParams[supplierId].params }
+      : { ...chinaParams };
+    const newParams = {
+      ...base,
+      noloMare: preset.noloMare,
+      fuelSurcharge: preset.fuelSurcharge,
+      ics2Usd: preset.ics2Usd,
+      ecaSurcharge: preset.ecaSurcharge,
+      noloPreset: presetKey,
+      // Applica anche costi SDB
+      costiSbarco: COSTI_SDB.thcSbarco,
+      addizionaliCompMar: COSTI_SDB.addizionaliCompMar,
+      deliveryOrder: COSTI_SDB.deliveryOrder,
+      doganaImport: COSTI_SDB.doganaImport,
+      trasportoInterno: COSTI_SDB.trasportoInterno,
+      fuelTrasportoPct: COSTI_SDB.fuelTrasportoPct
+    };
+    setSupplierParams(prev => ({
+      ...prev,
+      [supplierId]: { useGlobal: false, params: newParams }
+    }));
+  };
 
   // Export intero catalogo in Excel (tutti gli articoli)
   const exportCatalogoExcel = () => {
@@ -1187,6 +1275,25 @@ export default function GestionaleImportazioni() {
     if (!simulatorOpen || !simParams || !simulatorTarget) return null;
     return calcolaScomposizione(simulatorTarget.simItem, simParams);
   }, [simulatorOpen, simParams, simulatorTarget]);
+
+  // ===== SCOMPOSIZIONE LIVE PER CATALOGO =====
+  // Per ogni articolo CN, calcola la scomposizione usando i parametri del suo fornitore
+  const scomposizioneCatalogo = useMemo(() => {
+    const result = {};
+    for (const it of allItems) {
+      if (it.origine !== 'CN') continue;
+      const effParams = getEffectiveParams(it.supplierId);
+      const simItem = {
+        prezzoUsd: it.prezzoOriginale,
+        qty: it.qtyImportata || it.qtyDisponibile || 1,
+        pfuFascia: it.pfuFascia || '7_15'
+      };
+      // Uso qty riferimento specifica del fornitore
+      const qtyRif = parseFloat(effParams.qtyTotale) || simItem.qty || 1;
+      result[it.id] = calcolaScomposizione(simItem, { ...effParams, qtyTotale: qtyRif });
+    }
+    return result;
+  }, [allItems, supplierParams, chinaParams]);
 
   const fmtEur = (n) => new Intl.NumberFormat('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
   const fmtInt = (n) => new Intl.NumberFormat('it-IT').format(n || 0);
@@ -2130,11 +2237,51 @@ export default function GestionaleImportazioni() {
         .guide-body code { background: #eceff1; padding: 1px 4px; border-radius: 2px; font-size: 12px; color: #b71c1c; }
         .guide-body b { color: #0d47a1; }
         .guide-footer { background: #eceff1; padding: 8px 16px; border-top: 1px solid #cfd8dc; display: flex; justify-content: flex-end; }
+
+        /* ===== TAB FORNITORI CATALOGO ===== */
+        .supplier-tabs { display: flex; background: linear-gradient(to bottom, #eceff1, #cfd8dc); border-bottom: 2px solid #546e7a; padding: 4px 4px 0 4px; gap: 2px; overflow-x: auto; }
+        .sup-tab { padding: 6px 12px; background: #b0bec5; color: #37474f; font-size: 11px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; border: 1px solid #90a4ae; border-bottom: none; border-radius: 3px 3px 0 0; user-select: none; white-space: nowrap; transition: background 0.15s; }
+        .sup-tab:hover { background: #cfd8dc; }
+        .sup-tab.active { background: #fff; color: #0d47a1; border-color: #0d47a1; border-bottom: 2px solid #fff; margin-bottom: -2px; box-shadow: 0 -2px 4px rgba(0,0,0,0.08); z-index: 2; }
+        .sup-tab.eu-tab.active { color: #1b5e20; border-color: #2e7d32; }
+        .sup-tab.cn-tab.active { color: #b71c1c; border-color: #c62828; }
+        .sup-tab-count { background: rgba(0,0,0,0.15); padding: 1px 6px; border-radius: 8px; font-size: 9px; font-weight: 700; }
+        .sup-tab.active .sup-tab-count { background: rgba(13, 71, 161, 0.15); color: #0d47a1; }
+        .sup-tab-custom { background: #fff59d; color: #f57f17; padding: 1px 4px; border-radius: 2px; font-size: 10px; border: 1px solid #ffb300; }
+
+        /* ===== PANNELLO PARAMETRI FORNITORE ===== */
+        .sup-params-panel { background: #fff3e0; border: 1px solid #ffb74d; border-radius: 2px; margin: 6px; overflow: hidden; }
+        .sup-params-head { background: linear-gradient(to bottom, #ffcc80, #ffb74d); padding: 5px 10px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ff9800; }
+        .sup-params-title { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #bf360c; font-weight: 600; }
+        .sup-params-mode { font-size: 9px; padding: 1px 6px; border-radius: 2px; font-weight: 700; margin-left: 4px; }
+        .sup-params-mode.global { background: #e3f2fd; color: #0d47a1; border: 1px solid #1976d2; }
+        .sup-params-mode.custom { background: #fff59d; color: #bf360c; border: 1px solid #f57f17; }
+        .sup-params-actions { display: flex; gap: 8px; align-items: center; }
+        .sup-params-toggle { font-size: 11px; color: #37474f; display: flex; align-items: center; gap: 4px; cursor: pointer; font-weight: 600; }
+        .sup-params-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; padding: 8px; }
+        @media (max-width: 1400px) { .sup-params-grid { grid-template-columns: repeat(4, 1fr); } }
+        @media (max-width: 900px) { .sup-params-grid { grid-template-columns: repeat(2, 1fr); } }
+        .sup-fld { display: flex; flex-direction: column; gap: 2px; }
+        .sup-fld label { font-size: 9px; color: #5d4037; font-weight: 700; text-transform: uppercase; letter-spacing: 0.3px; }
+        .sup-fld .ctl { height: 22px; font-size: 11px; background: #fff; border: 1px solid #d7ccc8; }
+        .sup-fld .ctl:focus { border-color: #ff9800; outline: 1px solid #ff9800; }
+
+        /* ===== COLONNE SCOMPOSTE CATALOGO ===== */
+        table.grid.scomposto { min-width: 1600px; }
+        table.grid.scomposto th.col-cn { background: #1976d2 !important; color: #fff !important; font-size: 10px; border-color: #0d47a1 !important; }
+        table.grid.scomposto th.col-cn.col-extra { background: #f57c00 !important; border-color: #e65100 !important; }
+        table.grid.scomposto th.col-finale { background: #2e7d32 !important; color: #fff !important; border-color: #1b5e20 !important; }
+        table.grid.scomposto td.col-cn { background: #f3f8ff; border-color: #cfd8dc; font-family: 'Consolas', monospace; }
+        table.grid.scomposto td.col-cn.col-extra { background: #fff8e1; }
+        table.grid.scomposto td.col-cn.col-cif { background: #e3f2fd; font-weight: 700; color: #0d47a1; }
+        table.grid.scomposto td.col-finale { background: #e8f5e9; font-weight: 700; color: #1b5e20; border-color: #a5d6a7; }
+        table.grid.scomposto tr:hover td.col-cn { background: #e3f2fd; }
+        table.grid.scomposto tr.selected td.col-cn { background: #bbdefb !important; }
       `}</style>
 
       {/* MENU BAR */}
       <div className="menubar" onMouseLeave={() => setOpenMenu(null)}>
-        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v1.6</div>
+        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v1.7</div>
 
         {/* ARCHIVIO */}
         <div className={`menubar-item ${openMenu === 'archivio' ? 'open' : ''}`} onClick={() => setOpenMenu(openMenu === 'archivio' ? null : 'archivio')}>
@@ -2341,6 +2488,141 @@ export default function GestionaleImportazioni() {
                 </div>
               ) : (
                 <>
+                  {/* TAB FORNITORI */}
+                  <div className="supplier-tabs">
+                    <div className={`sup-tab ${activeCatalogTab === 'all' ? 'active' : ''}`} onClick={() => setActiveCatalogTab('all')}>
+                      🌍 Tutti <span className="sup-tab-count">{allItems.length}</span>
+                    </div>
+                    {suppliers.filter(s => s.origine === 'EU').length > 0 && (
+                      <div className={`sup-tab eu-tab ${activeCatalogTab === 'eu' ? 'active' : ''}`} onClick={() => setActiveCatalogTab('eu')}>
+                        🇪🇺 Europa <span className="sup-tab-count">{allItems.filter(i => i.origine === 'EU').length}</span>
+                      </div>
+                    )}
+                    {suppliers.filter(s => s.origine === 'CN').map(s => {
+                      const count = allItems.filter(i => i.supplierId === s.id).length;
+                      const sp = supplierParams[s.id];
+                      const useGlobal = !sp || sp.useGlobal;
+                      return (
+                        <div key={s.id} className={`sup-tab cn-tab ${activeCatalogTab === s.id ? 'active' : ''}`} onClick={() => setActiveCatalogTab(s.id)}>
+                          🇨🇳 {s.name}
+                          <span className="sup-tab-count">{count}</span>
+                          {!useGlobal && <span className="sup-tab-custom" title="Ha parametri personalizzati">⚙</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* PANNELLO PARAMETRI FORNITORE ATTIVO (solo CN) */}
+                  {activeCatalogTab !== 'all' && activeCatalogTab !== 'eu' && (() => {
+                    const sup = suppliers.find(s => s.id === activeCatalogTab);
+                    if (!sup || sup.origine !== 'CN') return null;
+                    const sp = supplierParams[sup.id];
+                    const useGlobal = !sp || sp.useGlobal;
+                    const effParams = getEffectiveParams(sup.id);
+                    return (
+                      <div className="sup-params-panel">
+                        <div className="sup-params-head">
+                          <div className="sup-params-title">
+                            <Package size={12} /> Parametri <b>{sup.name}</b>
+                            {useGlobal ? (
+                              <span className="sup-params-mode global">usa GLOBALI</span>
+                            ) : (
+                              <span className="sup-params-mode custom">PERSONALIZZATI</span>
+                            )}
+                          </div>
+                          <div className="sup-params-actions">
+                            <label className="sup-params-toggle">
+                              <input type="checkbox" checked={useGlobal} onChange={e => {
+                                if (e.target.checked) {
+                                  setSupplierParams(prev => ({ ...prev, [sup.id]: { useGlobal: true, params: {} } }));
+                                } else {
+                                  setSupplierParams(prev => ({ ...prev, [sup.id]: { useGlobal: false, params: { ...chinaParams } } }));
+                                }
+                              }} /> Eredita globali
+                            </label>
+                            {!useGlobal && <button className="tbtn" style={{ fontSize: 10, padding: '2px 6px', height: 20 }} onClick={() => resetSupplierToGlobal(sup.id)}>Reset</button>}
+                          </div>
+                        </div>
+                        <div className="sup-params-grid">
+                          <div className="sup-fld">
+                            <label>Rotta / Container</label>
+                            <select className="ctl" value={effParams.noloPreset || 'hcm_40'} onChange={e => applyPresetToSupplier(sup.id, e.target.value)}>
+                              {Object.entries(NOLO_PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                            </select>
+                          </div>
+                          <div className="sup-fld">
+                            <label>Qty totale rif.</label>
+                            <input className="ctl" type="number" step="1" value={effParams.qtyTotale || 0} onChange={e => updateSupplierParam(sup.id, 'qtyTotale', parseInt(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>Cambio EUR/USD</label>
+                            <input className="ctl" type="number" step="0.0001" value={effParams.tassoEurUsd} onChange={e => updateSupplierParam(sup.id, 'tassoEurUsd', parseFloat(e.target.value) || 1)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>Nolo mare $</label>
+                            <input className="ctl" type="number" value={effParams.noloMare} onChange={e => updateSupplierParam(sup.id, 'noloMare', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>Fuel mare €</label>
+                            <input className="ctl" type="number" value={effParams.fuelSurcharge} onChange={e => updateSupplierParam(sup.id, 'fuelSurcharge', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>ICS2 $</label>
+                            <input className="ctl" type="number" value={effParams.ics2Usd} onChange={e => updateSupplierParam(sup.id, 'ics2Usd', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>ECA $</label>
+                            <input className="ctl" type="number" value={effParams.ecaSurcharge} onChange={e => updateSupplierParam(sup.id, 'ecaSurcharge', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>THC Sbarco €</label>
+                            <input className="ctl" type="number" value={effParams.costiSbarco} onChange={e => updateSupplierParam(sup.id, 'costiSbarco', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>Addiz. Comp.Mar. €</label>
+                            <input className="ctl" type="number" value={effParams.addizionaliCompMar} onChange={e => updateSupplierParam(sup.id, 'addizionaliCompMar', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>Dogana €</label>
+                            <input className="ctl" type="number" value={effParams.doganaImport} onChange={e => updateSupplierParam(sup.id, 'doganaImport', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>Delivery Order €</label>
+                            <input className="ctl" type="number" value={effParams.deliveryOrder} onChange={e => updateSupplierParam(sup.id, 'deliveryOrder', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>Trasp. Interno €</label>
+                            <input className="ctl" type="number" value={effParams.trasportoInterno} onChange={e => updateSupplierParam(sup.id, 'trasportoInterno', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>Fuel trasp. %</label>
+                            <input className="ctl" type="number" step="0.1" value={effParams.fuelTrasportoPct} onChange={e => updateSupplierParam(sup.id, 'fuelTrasportoPct', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>Commissioni €</label>
+                            <input className="ctl" type="number" value={effParams.commissioni} onChange={e => updateSupplierParam(sup.id, 'commissioni', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>Dazio %</label>
+                            <input className="ctl" type="number" step="0.1" value={effParams.dazioPct} onChange={e => updateSupplierParam(sup.id, 'dazioPct', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>IVA %</label>
+                            <input className="ctl" type="number" step="0.5" value={effParams.ivaPct} onChange={e => updateSupplierParam(sup.id, 'ivaPct', parseFloat(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>9AJ unità</label>
+                            <input className="ctl" type="number" value={effParams.unita9AJ} onChange={e => updateSupplierParam(sup.id, 'unita9AJ', parseInt(e.target.value) || 0)} />
+                          </div>
+                          <div className="sup-fld">
+                            <label>Aggiust. v.45 €</label>
+                            <input className="ctl" type="number" value={effParams.aggiustamento} onChange={e => updateSupplierParam(sup.id, 'aggiustamento', parseFloat(e.target.value) || 0)} />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <div className="filters">
                     <div className="fld">
                       <label>Ricerca</label>
@@ -2382,7 +2664,7 @@ export default function GestionaleImportazioni() {
                   </div>
 
                   <div className="grid-wrap">
-                    <table className={`grid ${compactView ? 'compact' : ''}`}>
+                    <table className={`grid ${compactView ? 'compact' : ''} ${activeCatalogTab !== 'eu' ? 'scomposto' : ''}`}>
                       <thead>
                         <tr>
                           <th style={{ width: 26, textAlign: 'center', cursor: 'default' }}>Sel</th>
@@ -2390,19 +2672,32 @@ export default function GestionaleImportazioni() {
                           <th onClick={() => toggleSort('marca')}>Marca {sortBy.field === 'marca' && <span className="si">{sortBy.dir === 'asc' ? '▲' : '▼'}</span>}</th>
                           <th onClick={() => toggleSort('modello')}>Modello</th>
                           <th onClick={() => toggleSort('misura')}>Misura</th>
-                          <th>Fornitore</th>
-                          <th className="num" onClick={() => toggleSort('prezzoOriginale')}>Orig.</th>
-                          <th className="num">PFU</th>
-                          <th className="num">Tras./U</th>
-                          <th className="num">Dazio</th>
-                          <th className="num">IVA</th>
-                          <th className="num" onClick={() => toggleSort('prezzoFinale')}>P. Finale</th>
+                          {activeCatalogTab === 'all' && <th>Fornitore</th>}
+                          <th className="num" onClick={() => toggleSort('prezzoOriginale')}>Prezzo Orig.</th>
+                          {/* Colonne scomposte — solo se stiamo mostrando CN */}
+                          {activeCatalogTab !== 'eu' && <>
+                            <th className="num col-cn" title="FOB EUR = USD / cambio">FOB €</th>
+                            <th className="num col-cn" title="Nolo marittimo per pezzo (ripartito)">Nolo €</th>
+                            <th className="num col-cn" title="Aggiustamento v.45 per pezzo">Aggiust €</th>
+                            <th className="num col-cn" title="Valore Statistico CIF = FOB + Nolo + Aggiust">CIF €</th>
+                            <th className="num col-cn" title="Dazio A00 (4,5%)">Dazio €</th>
+                            <th className="num col-cn" title="9AJ Diritto Marittimo per pezzo">9AJ €</th>
+                            <th className="num col-cn" title="IVA B00 (22%) su (CIF+Dazio+9AJ)">IVA €</th>
+                            <th className="num col-cn col-extra" title="Extra Nolo art.74 (THC, dogana, fuel) per pezzo">ExtraNolo €</th>
+                            <th className="num col-cn col-extra" title="Servizi con IVA (delivery, trasporto, fuel) per pezzo">Servizi €</th>
+                            <th className="num col-cn col-extra" title="Commissioni per pezzo">Comm €</th>
+                          </>}
+                          <th className="num">PFU €</th>
+                          <th className="num col-finale" onClick={() => toggleSort('prezzoFinale')}>TOTALE €</th>
                           <th style={{ width: 40, cursor: 'default' }}>🔍</th>
                         </tr>
                       </thead>
                       <tbody>
                         {filteredItems.slice(0, compactView ? 1500 : 500).map(item => {
                           const isSelected = selectedItems.some(i => i.id === item.id);
+                          // Per articoli CN uso la scomposizione live, per EU i valori statici
+                          const sc = item.origine === 'CN' ? scomposizioneCatalogo[item.id] : null;
+                          const prezzoFinale = sc ? sc.costoFinale : (parseFloat(item.prezzoFinale) || 0);
                           return (
                             <tr key={item.id} className={isSelected ? 'selected' : ''} onClick={() => toggleSelect(item)}>
                               <td style={{ textAlign: 'center' }}>
@@ -2412,19 +2707,43 @@ export default function GestionaleImportazioni() {
                               <td style={{ fontWeight: 600 }}>{item.marca}</td>
                               <td>{item.modello || '—'}</td>
                               <td><span className="tag-mis">{item.misura || '—'}</span></td>
-                              <td><span className="tag-sup">{item.supplierName}</span></td>
+                              {activeCatalogTab === 'all' && <td><span className="tag-sup">{item.supplierName}</span></td>}
                               <td className="num price-orig">
                                 {fmtEur(item.prezzoOriginale)}
                                 {item.currency !== 'EUR' && <span className="tag-cur">{item.currency}</span>}
                               </td>
-                              <td className="num">{fmtEur(item.pfu)}</td>
-                              <td className="num">{fmtEur(item.trasportoPerUnit)}</td>
-                              <td className="num">{item.dazio ? fmtEur(item.dazio) : '—'}</td>
-                              <td className="num">{item.iva ? fmtEur(item.iva) : '—'}</td>
-                              <td className="num price-final">
-                                € {fmtEur(item.prezzoFinale)}
+                              {/* Colonne scomposte */}
+                              {activeCatalogTab !== 'eu' && <>
+                                {item.origine === 'CN' && sc ? <>
+                                  <td className="num col-cn">{fmtEur(sc.fobEur)}</td>
+                                  <td className="num col-cn">{fmtEur(sc.noloPerPezzo)}</td>
+                                  <td className="num col-cn">{fmtEur(sc.aggPerPezzo)}</td>
+                                  <td className="num col-cn col-cif"><b>{fmtEur(sc.valoreStatistico)}</b></td>
+                                  <td className="num col-cn">{fmtEur(sc.dazio)}</td>
+                                  <td className="num col-cn">{fmtEur(sc.tassePerPezzo)}</td>
+                                  <td className="num col-cn">{fmtEur(sc.iva)}</td>
+                                  <td className="num col-cn col-extra">{fmtEur(sc.extraNoloPerPezzo)}</td>
+                                  <td className="num col-cn col-extra">{fmtEur(sc.serviziIvaPerPezzo)}</td>
+                                  <td className="num col-cn col-extra">{fmtEur(sc.commissioniPerPezzo)}</td>
+                                </> : <>
+                                  {/* Articolo EU: colonne CN vuote */}
+                                  <td className="num col-cn">—</td>
+                                  <td className="num col-cn">—</td>
+                                  <td className="num col-cn">—</td>
+                                  <td className="num col-cn">—</td>
+                                  <td className="num col-cn">—</td>
+                                  <td className="num col-cn">—</td>
+                                  <td className="num col-cn">—</td>
+                                  <td className="num col-cn col-extra">—</td>
+                                  <td className="num col-cn col-extra">—</td>
+                                  <td className="num col-cn col-extra">—</td>
+                                </>}
+                              </>}
+                              <td className="num">{fmtEur(sc ? sc.pfuPezzo : item.pfu)}</td>
+                              <td className="num price-final col-finale">
+                                € {fmtEur(prezzoFinale)}
                                 {item.origine === 'CN' && !item.lastBollaId && (
-                                  <span title="Prezzo stimato, non ancora confermato da una bolla reale" style={{ fontSize: 8, marginLeft: 4, background: '#fff3e0', color: '#e65100', padding: '1px 4px', border: '1px solid #ffb74d', borderRadius: 2, fontWeight: 700 }}>STIMA</span>
+                                  <span title="Prezzo stimato con parametri attuali" style={{ fontSize: 8, marginLeft: 4, background: '#fff3e0', color: '#e65100', padding: '1px 4px', border: '1px solid #ffb74d', borderRadius: 2, fontWeight: 700 }}>LIVE</span>
                                 )}
                                 {item.lastBollaId && (
                                   <span title="Prezzo aggiornato con bolla reale" style={{ fontSize: 8, marginLeft: 4, background: '#e8f5e9', color: '#1b5e20', padding: '1px 4px', border: '1px solid #66bb6a', borderRadius: 2, fontWeight: 700 }}>REALE</span>
