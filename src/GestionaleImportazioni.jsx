@@ -1,0 +1,2601 @@
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import * as XLSX from 'xlsx';
+import { FileSpreadsheet, Search, Trash2, Download, Plus, Check, X, Upload, Package, Truck, Database, List, ShoppingCart, Settings, FolderOpen, AlertCircle, Ship, FileText, Calculator, Printer, Globe2, Anchor } from 'lucide-react';
+
+export default function GestionaleImportazioni() {
+  // ===== STATO BASE =====
+  const [suppliers, setSuppliers] = useState([]);
+  const [allItems, setAllItems] = useState([]);
+  const [selectedItems, setSelectedItems] = useState([]);
+  const [bolle, setBolle] = useState([]); // bolle doganali Cina
+  const [exchangeRate, setExchangeRate] = useState(0.92);
+  const [loading, setLoading] = useState(true);
+
+  // ===== IMPORT EUROPA =====
+  const [importStep, setImportStep] = useState('idle');
+  const [rawData, setRawData] = useState([]);
+  const [headers, setHeaders] = useState([]);
+  const [mapping, setMapping] = useState({ marca: '', modello: '', misura: '', prezzo: '', qty: '', currency: 'EUR' });
+  const [supplierName, setSupplierName] = useState('');
+  const [pfuValue, setPfuValue] = useState('');
+  const [trasportoValue, setTrasportoValue] = useState('');
+  const [qtyValue, setQtyValue] = useState('');
+  const [fileName, setFileName] = useState('');
+  const [importMode, setImportMode] = useState('europa'); // europa | cina
+
+  // ===== IMPORT CINA (bolla doganale) =====
+  // Preset nolo Savino Del Bene (aggiornati Apr 2026, validità 01/05-14/05)
+  const NOLO_PRESETS = {
+    'hcm_20': { label: 'HoChiMin 1×20\' BOX', noloMare: 2750, fuelSurcharge: 52, ics2Usd: 35, ecaSurcharge: 15 },
+    'hcm_40': { label: 'HoChiMin 1×40\' HC',  noloMare: 3700, fuelSurcharge: 104, ics2Usd: 35, ecaSurcharge: 15 },
+    'cn_20':  { label: 'Cina base 1×20\' BOX', noloMare: 2650, fuelSurcharge: 52, ics2Usd: 35, ecaSurcharge: 15 },
+    'cn_40':  { label: 'Cina base 1×40\' HC',  noloMare: 3550, fuelSurcharge: 104, ics2Usd: 35, ecaSurcharge: 15 }
+  };
+  // Costi fissi Savino Del Bene (EUR)
+  const COSTI_SDB = {
+    thcSbarco: 210,         // THC sbarco container EUR
+    addizionaliCompMar: 130, // Addizionali Compagnia Marittima Catania
+    deliveryOrder: 70,       // Svincolo polizza
+    doganaImport: 95,        // Sdoganamento per fornitore
+    trasportoInterno: 315,   // Augusta->Catania
+    fuelTrasportoPct: 10     // +10% fuel sul trasporto interno
+  };
+
+  const [chinaParams, setChinaParams] = useState({
+    // Tassi
+    tassoEurUsd: 1.1787, // EUR/USD come da bolla (1 USD = 1/1.1787 EUR)
+    qtyTotale: 0,
+    // Nolo USD
+    noloMare: 0, ecaSurcharge: 0, ics2Usd: 0, localChargeUsd: 0,
+    // Extra nolo EUR (art 74)
+    costiSbarco: 0, doganaImport: 0, fuelSurcharge: 0,
+    ecaEur: 0, ics2Eur: 0, localChargeEur: 0,
+    // Addizionali separate (Compagnia Marittima)
+    addizionaliCompMar: 0,
+    // Servizi con IVA 22%
+    deliveryOrder: 0, trasportoInterno: 0, ivaSpedizioniere: 0,
+    // Fuel trasporto interno in %
+    fuelTrasportoPct: 0,
+    // Fisse
+    commissioni: 0,
+    // 9AJ: è un diritto fisso calcolato su "unità 9AJ" (es. 4 unità x 1,0908 = 4,36 €)
+    // Nel DAU di riferimento: 4 unità supplementari 9AJ (non coincide con il numero di pneumatici)
+    dirittoDoganale9AJ: 4.36, unita9AJ: 4,
+    // Aggiustamento (voce 45 DAU) - es. 5,00 € fisso
+    aggiustamento: 5,
+    // Aliquote
+    dazioPct: 4.5, ivaPct: 22, antidumpingPct: 0,
+    // PFU per fascia
+    pfuFino7: 1.95, pfu7_15: 2.9, pfu15_30: 3.7, pfu30_60: 6.35, pfuOltre60: 13.2,
+    // Markup
+    markup: 1.45,
+    // Dati spedizione
+    fornitore: '', indirizzoFornitore: 'ROOM 2206, BAI TONG BUILDING - QINGDAO CITY',
+    fattura: '', portoImbarco: 'QINGDAO', portoSbarco: 'AUGUSTA',
+    nave: '', container: '', incoterm: 'FOB', dataSpedizione: '',
+    importatore: 'VENTURA NICOLA', importatorePiva: 'IT05495120874',
+    importatoreIndirizzo: 'VIA ZIA LISA 374 - 95121 CATANIA (CT)',
+    importatoreAttivita: 'RIPARAZ.NE E SOST.NE PNEUMATICI',
+    spedizioniere: 'Savino Del Bene',
+    dichiarante: 'DIOLOSA\' ROSSELLA', dichiaranteCf: 'ITDLSRSL74D55C351A',
+    dichiaranteIndirizzo: 'VIA DUSMET, 131 - 95131 CATANIA',
+    codiceTaric: '40111000 00',
+    // Pesi (voce 35 e 38)
+    massaLorda: 0, massaNetta: 0,
+    // Nr riferimento (voce 7)
+    nrRiferimento: '',
+    // Documento precedente (voce 40)
+    docPrecedente: '',
+    // Menzioni speciali (voce 44) - documenti certificati autorizzazioni
+    menzioniSpeciali: 'Y923 - CN\nY160\n39YY - ITAUG\nN380 - CN\nN705 - CN',
+    // Regime doganale (voce 37) e preferenze (voce 36)
+    regime: '4000', preferenze: '100',
+    // Ufficio dogana
+    ufficioDogana: 'IT099101',
+    localizzazioneMerci: '-FE',
+    // Dilazione pagamento (voce 48)
+    dilazionePagamento: 'ITDPOIT057000-2018-DVM14567'
+  });
+  const [chinaItems, setChinaItems] = useState([]); // [{modello, misura, qty, prezzoUsd, pfuFascia}]
+  const [chinaStep, setChinaStep] = useState('upload'); // upload | mapping | parameters | preview
+  const [chinaMapping, setChinaMapping] = useState({ marca: '', modello: '', misura: '', prezzo: '', qty: '' });
+  const [chinaRawData, setChinaRawData] = useState([]);
+  const [chinaHeaders, setChinaHeaders] = useState([]);
+  const [chinaFileName, setChinaFileName] = useState('');
+  const [chinaFornitoreSelected, setChinaFornitoreSelected] = useState('');
+  const [currentBolla, setCurrentBolla] = useState(null); // bolla in preview
+  const [bollaMode, setBollaMode] = useState('file'); // 'file' = import listino | 'selection' = bolla dalla selezione
+  const [noloPreset, setNoloPreset] = useState('hcm_40'); // preset nolo attivo
+  const [updateCatalogOnConfirm, setUpdateCatalogOnConfirm] = useState(true); // aggiorna prezzi articoli selezionati con costi reali
+
+  // ===== RICERCA / FILTRI =====
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterSupplier, setFilterSupplier] = useState('');
+  const [filterMarca, setFilterMarca] = useState('');
+  const [filterOrigine, setFilterOrigine] = useState(''); // '' | 'EU' | 'CN'
+  const [sortBy, setSortBy] = useState({ field: 'marca', dir: 'asc' });
+  const [activeSection, setActiveSection] = useState('catalogo');
+  const [compactView, setCompactView] = useState(false); // vista compatta catalogo
+  const [compareMisuraQuery, setCompareMisuraQuery] = useState(''); // ricerca misura nel confronto
+
+  const fileInputRef = useRef(null);
+  const chinaFileInputRef = useRef(null);
+
+  // ===== PERSISTENZA =====
+  useEffect(() => {
+    (async () => {
+      try { const s = await window.storage.get('suppliers'); if (s) setSuppliers(JSON.parse(s.value)); } catch (e) {}
+      try { const i = await window.storage.get('allItems'); if (i) setAllItems(JSON.parse(i.value)); } catch (e) {}
+      try { const sel = await window.storage.get('selectedItems'); if (sel) setSelectedItems(JSON.parse(sel.value)); } catch (e) {}
+      try { const ex = await window.storage.get('exchangeRate'); if (ex) setExchangeRate(parseFloat(ex.value)); } catch (e) {}
+      try { const b = await window.storage.get('bolle'); if (b) setBolle(JSON.parse(b.value)); } catch (e) {}
+      try { const cp = await window.storage.get('chinaParams'); if (cp) setChinaParams(prev => ({ ...prev, ...JSON.parse(cp.value) })); } catch (e) {}
+      try { const cv = await window.storage.get('compactView'); if (cv) setCompactView(cv.value === 'true'); } catch (e) {}
+      setLoading(false);
+    })();
+  }, []);
+
+  useEffect(() => { if (!loading) window.storage.set('suppliers', JSON.stringify(suppliers)).catch(() => {}); }, [suppliers, loading]);
+  useEffect(() => { if (!loading) window.storage.set('allItems', JSON.stringify(allItems)).catch(() => {}); }, [allItems, loading]);
+  useEffect(() => { if (!loading) window.storage.set('selectedItems', JSON.stringify(selectedItems)).catch(() => {}); }, [selectedItems, loading]);
+  useEffect(() => { if (!loading) window.storage.set('exchangeRate', String(exchangeRate)).catch(() => {}); }, [exchangeRate, loading]);
+  useEffect(() => { if (!loading) window.storage.set('bolle', JSON.stringify(bolle)).catch(() => {}); }, [bolle, loading]);
+  useEffect(() => { if (!loading) window.storage.set('chinaParams', JSON.stringify(chinaParams)).catch(() => {}); }, [chinaParams, loading]);
+  useEffect(() => { if (!loading) window.storage.set('compactView', String(compactView)).catch(() => {}); }, [compactView, loading]);
+
+  // Auto-ricalcola 9AJ quando cambiano le unità (solo se le unità sono > 0)
+  useEffect(() => {
+    const u = parseInt(chinaParams.unita9AJ) || 0;
+    if (u > 0) {
+      const calc = Math.round(u * 1.0908 * 100) / 100;
+      if (Math.abs(calc - parseFloat(chinaParams.dirittoDoganale9AJ)) > 0.005) {
+        setChinaParams(prev => ({ ...prev, dirittoDoganale9AJ: calc }));
+      }
+    }
+  }, [chinaParams.unita9AJ]);
+
+  // ===================================================================
+  // IMPORT EUROPA
+  // ===================================================================
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+      const json = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
+      if (json.length === 0) { alert('Il file è vuoto'); return; }
+      const cleaned = json.filter(row => row.some(c => String(c).trim() !== ''));
+      if (cleaned.length === 0) { alert('Nessun dato trovato'); return; }
+      const headerRow = cleaned[0].map((h, i) => String(h || `Colonna ${i + 1}`));
+      setHeaders(headerRow);
+      setRawData(cleaned);
+      setSupplierName(file.name.replace(/\.(xlsx|xls|csv)$/i, ''));
+      setImportStep('preview');
+    } catch (err) {
+      alert('Errore nel leggere il file: ' + err.message);
+    }
+  };
+
+  const confirmImport = () => {
+    if (!mapping.marca || !mapping.prezzo || !supplierName.trim()) {
+      alert('Compilare: Ragione sociale, Colonna Marca e Colonna Prezzo');
+      return;
+    }
+    const pfu = parseFloat(pfuValue) || 0;
+    const trasporto = parseFloat(trasportoValue) || 0;
+    const qty = parseFloat(qtyValue) || 0;
+    const trasportoPerUnit = qty > 0 ? trasporto / qty : 0;
+    const colIdx = (c) => headers.indexOf(c);
+    const mIdx = colIdx(mapping.marca), modIdx = colIdx(mapping.modello);
+    const misIdx = colIdx(mapping.misura), prIdx = colIdx(mapping.prezzo);
+    const supplierId = 'sup_' + Date.now();
+    const items = [];
+
+    for (let i = 1; i < rawData.length; i++) {
+      const row = rawData[i];
+      const rawPrezzo = row[prIdx];
+      const prezzoNum = parseFloat(String(rawPrezzo).replace(/[^\d.,\-]/g, '').replace(',', '.'));
+      if (isNaN(prezzoNum) || prezzoNum <= 0) continue;
+      const prezzoEur = mapping.currency === 'USD' ? prezzoNum * exchangeRate : prezzoNum;
+      const prezzoFinale = prezzoEur + pfu + trasportoPerUnit;
+      items.push({
+        id: supplierId + '_' + i, supplierId, supplierName: supplierName.trim(),
+        origine: 'EU',
+        marca: String(row[mIdx] || '').trim(),
+        modello: modIdx >= 0 ? String(row[modIdx] || '').trim() : '',
+        misura: misIdx >= 0 ? String(row[misIdx] || '').trim() : '',
+        prezzoOriginale: prezzoNum, currency: mapping.currency,
+        prezzoEur: Math.round(prezzoEur * 100) / 100,
+        pfu, trasportoPerUnit: Math.round(trasportoPerUnit * 100) / 100,
+        prezzoFinale: Math.round(prezzoFinale * 100) / 100
+      });
+    }
+
+    if (items.length === 0) { alert('Nessuna riga valida trovata'); return; }
+    setSuppliers([...suppliers, {
+      id: supplierId, name: supplierName.trim(), origine: 'EU',
+      importDate: new Date().toISOString(), itemCount: items.length,
+      pfu, trasporto, qty, currency: mapping.currency
+    }]);
+    setAllItems([...allItems, ...items]);
+    cancelImport();
+  };
+
+  const cancelImport = () => {
+    setImportStep('idle'); setRawData([]); setHeaders([]);
+    setMapping({ marca: '', modello: '', misura: '', prezzo: '', qty: '', currency: 'EUR' });
+    setSupplierName(''); setPfuValue(''); setTrasportoValue(''); setQtyValue(''); setFileName('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  // ===================================================================
+  // IMPORT CINA - BOLLA DOGANALE
+  // ===================================================================
+  const handleChinaFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setChinaFileName(file.name);
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      // Cerca il foglio con i dati articoli (può essere "Calcolo Costi" o il primo)
+      let targetSheet = workbook.SheetNames[0];
+      for (const name of workbook.SheetNames) {
+        if (name.toLowerCase().includes('calcolo') || name.toLowerCase().includes('costi') || name.toLowerCase().includes('articoli')) {
+          targetSheet = name; break;
+        }
+      }
+      const sheet = workbook.Sheets[targetSheet];
+      const json = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+      if (json.length === 0) { alert('Foglio vuoto'); return; }
+      const cleaned = json.filter(row => row.some(c => String(c).trim() !== ''));
+      // Trova la riga di intestazione (cerca riga con "Modello" o "Misura")
+      let headerRowIdx = 0;
+      for (let i = 0; i < Math.min(10, cleaned.length); i++) {
+        const rowStr = cleaned[i].map(c => String(c).toLowerCase()).join('|');
+        if (rowStr.includes('modello') || rowStr.includes('misura') || rowStr.includes('marca')) {
+          headerRowIdx = i; break;
+        }
+      }
+      const headerRow = cleaned[headerRowIdx].map((h, i) => String(h || `Colonna ${i + 1}`));
+      setChinaHeaders(headerRow);
+      setChinaRawData(cleaned.slice(headerRowIdx));
+      // Pre-setta nome fornitore dal file
+      if (!chinaParams.fornitore) {
+        setChinaParams(prev => ({ ...prev, fornitore: file.name.replace(/\.(xlsx|xls|csv)$/i, '').toUpperCase() }));
+      }
+      setChinaStep('mapping');
+    } catch (err) {
+      alert('Errore: ' + err.message);
+    }
+  };
+
+  const confirmChinaMapping = () => {
+    if (!chinaMapping.prezzo || !chinaMapping.qty) {
+      alert('Mappare almeno Prezzo USD e Quantità');
+      return;
+    }
+    if (!chinaParams.fornitore.trim()) {
+      alert('Inserire nome fornitore');
+      return;
+    }
+    const colIdx = (c) => chinaHeaders.indexOf(c);
+    const brandIdx = colIdx(chinaMapping.marca);
+    const modIdx = colIdx(chinaMapping.modello);
+    const misIdx = colIdx(chinaMapping.misura);
+    const prIdx = colIdx(chinaMapping.prezzo);
+    const qtyIdx = colIdx(chinaMapping.qty);
+
+    const items = [];
+    let totalQty = 0;
+    for (let i = 1; i < chinaRawData.length; i++) {
+      const row = chinaRawData[i];
+      const rawPrezzo = row[prIdx];
+      const rawQty = row[qtyIdx];
+      const prezzo = parseFloat(String(rawPrezzo).replace(/[^\d.,\-]/g, '').replace(',', '.'));
+      const qty = parseInt(String(rawQty).replace(/[^\d]/g, ''));
+      if (isNaN(prezzo) || prezzo <= 0) continue;
+      const misura = misIdx >= 0 ? String(row[misIdx] || '').trim() : '';
+      // Determina fascia PFU dal diametro (pollici) se riesce a ricavarlo
+      let pfuFascia = '7_15';
+      const diametroMatch = misura.match(/R(\d+)/i);
+      if (diametroMatch) {
+        const pollici = parseInt(diametroMatch[1]);
+        if (pollici <= 14) pfuFascia = 'fino7';
+        else if (pollici <= 17) pfuFascia = '7_15';
+        else if (pollici <= 21) pfuFascia = '15_30';
+        else pfuFascia = '30_60';
+      }
+      items.push({
+        idx: i,
+        marca: brandIdx >= 0 ? String(row[brandIdx] || '').trim() : chinaParams.fornitore,
+        modello: modIdx >= 0 ? String(row[modIdx] || '').trim() : '',
+        misura, qty: qty || 1, prezzoUsd: prezzo, pfuFascia
+      });
+      totalQty += (qty || 1);
+    }
+    if (items.length === 0) { alert('Nessuna riga valida'); return; }
+    setChinaItems(items);
+    setChinaParams(prev => ({ ...prev, qtyTotale: totalQty }));
+    // Salta direttamente al salvataggio nel catalogo (non apre wizard bolla)
+    saveChinaListino(items);
+  };
+
+  // Salva il listino Cina nel catalogo (prezzo EUR stimato con dazi+IVA+PFU standard)
+  const saveChinaListino = (items) => {
+    const p = chinaParams;
+    const pfuMap = { fino7: p.pfuFino7, '7_15': p.pfu7_15, '15_30': p.pfu15_30, '30_60': p.pfu30_60, oltre60: p.pfuOltre60 };
+    // Stima: prezzo EUR = (USD / cambio) + dazio% + IVA% + PFU fascia
+    // Nota: questa è una STIMA per il catalogo. Il calcolo reale si fa in bolla con costi accessori noti.
+    const supplierId = 'cn_' + Date.now();
+    const listino = items.map((item, i) => {
+      const pfuPezzo = parseFloat(pfuMap[item.pfuFascia]) || p.pfu7_15;
+      const prezzoEurBase = item.prezzoUsd / p.tassoEurUsd;
+      const dazioStimato = prezzoEurBase * (p.dazioPct / 100);
+      const ivaStimata = (prezzoEurBase + dazioStimato) * (p.ivaPct / 100);
+      const prezzoStimato = prezzoEurBase + dazioStimato + ivaStimata + pfuPezzo;
+      return {
+        id: supplierId + '_' + i, supplierId, supplierName: p.fornitore,
+        origine: 'CN',
+        marca: item.marca || p.fornitore,
+        modello: item.modello, misura: item.misura,
+        prezzoOriginale: item.prezzoUsd, currency: 'USD',
+        prezzoEur: Math.round(prezzoEurBase * 100) / 100,
+        pfu: Math.round(pfuPezzo * 100) / 100,
+        trasportoPerUnit: 0,
+        dazio: Math.round(dazioStimato * 100) / 100,
+        iva: Math.round(ivaStimata * 100) / 100,
+        prezzoFinale: Math.round(prezzoStimato * 100) / 100, // STIMA indicativa
+        pfuFascia: item.pfuFascia,
+        qtyDisponibile: item.qty
+      };
+    });
+    setSuppliers([...suppliers, {
+      id: supplierId, name: p.fornitore, origine: 'CN',
+      importDate: new Date().toISOString(), itemCount: listino.length,
+      currency: 'USD', qty: items.reduce((s, i) => s + i.qty, 0)
+    }]);
+    setAllItems([...allItems, ...listino]);
+    cancelChinaImport();
+    setActiveSection('catalogo');
+  };
+
+  // === CALCOLI BOLLA DOGANALE ===
+  const chinaCalcolo = useMemo(() => {
+    if (chinaItems.length === 0) return null;
+    const p = chinaParams;
+    const qtyTot = p.qtyTotale || chinaItems.reduce((s, i) => s + i.qty, 0);
+    if (qtyTot === 0) return null;
+
+    // 1) Valore FOB totale USD
+    const fobTotUsd = chinaItems.reduce((s, i) => s + i.prezzoUsd * i.qty, 0);
+    const fobTotEur = fobTotUsd / p.tassoEurUsd;
+
+    // 2) Nolo USD totale + per pezzo EUR
+    const noloTotUsd = (parseFloat(p.noloMare) || 0) + (parseFloat(p.ecaSurcharge) || 0) + (parseFloat(p.ics2Usd) || 0) + (parseFloat(p.localChargeUsd) || 0);
+    const noloTotEur = noloTotUsd / p.tassoEurUsd;
+    const noloPerPezzo = noloTotEur / qtyTot;
+
+    // 3) Aggiustamento (voce 45 DAU) - fisso totale ripartito per pezzo
+    const aggiustamentoTot = parseFloat(p.aggiustamento) || 0;
+    const aggiustamentoPerPezzo = aggiustamentoTot / qtyTot;
+
+    // 4) CIF EUR = FOB EUR + Nolo EUR per pezzo (per ogni gomma)
+
+    // 5) Extra Nolo (art.74 non imponibile IVA) - EUR locali
+    // Include: costi sbarco/THC, dogana, fuel mare, ECA/ICS2 EUR, local charge, addizionali compagnia marittima
+    const extraNoloTot = (parseFloat(p.costiSbarco) || 0) + (parseFloat(p.doganaImport) || 0) + (parseFloat(p.fuelSurcharge) || 0) + (parseFloat(p.ecaEur) || 0) + (parseFloat(p.ics2Eur) || 0) + (parseFloat(p.localChargeEur) || 0) + (parseFloat(p.addizionaliCompMar) || 0);
+    const extraNoloPerPezzo = extraNoloTot / qtyTot;
+
+    // 6) Servizi con IVA 22% (delivery order + trasporto interno + fuel trasporto + iva spedizioniere)
+    const trasportoBase = parseFloat(p.trasportoInterno) || 0;
+    const fuelTrasportoImporto = trasportoBase * (parseFloat(p.fuelTrasportoPct) || 0) / 100;
+    const serviziIvaTot = (parseFloat(p.deliveryOrder) || 0) + trasportoBase + fuelTrasportoImporto + (parseFloat(p.ivaSpedizioniere) || 0);
+    const serviziIvaPerPezzo = serviziIvaTot / qtyTot;
+
+    // 7) Commissioni e tasse fisse (9AJ totale ripartito)
+    const commissioniPerPezzo = (parseFloat(p.commissioni) || 0) / qtyTot;
+    const dirittoTotale9AJ = parseFloat(p.dirittoDoganale9AJ) || 0;
+    const tasseFissePerPezzo = dirittoTotale9AJ / qtyTot;
+
+    // 8) Calcolo per ogni articolo
+    const righe = chinaItems.map(item => {
+      const cifPerPezzoBase = (item.prezzoUsd / p.tassoEurUsd) + noloPerPezzo;
+      const cifPerPezzo = cifPerPezzoBase + aggiustamentoPerPezzo; // valore statistico per pezzo
+      const dazioPerPezzo = cifPerPezzo * (p.dazioPct / 100);
+      const antidumpingPerPezzo = cifPerPezzo * (p.antidumpingPct / 100);
+      const baseIva = cifPerPezzo + dazioPerPezzo + antidumpingPerPezzo + tasseFissePerPezzo;
+      const ivaPerPezzo = baseIva * (p.ivaPct / 100);
+
+      // PFU in base alla fascia
+      const pfuMap = { fino7: p.pfuFino7, '7_15': p.pfu7_15, '15_30': p.pfu15_30, '30_60': p.pfu30_60, oltre60: p.pfuOltre60 };
+      const pfuPezzo = parseFloat(pfuMap[item.pfuFascia]) || p.pfu7_15;
+
+      const costoSenzaPfu = cifPerPezzo + dazioPerPezzo + antidumpingPerPezzo + tasseFissePerPezzo + ivaPerPezzo + extraNoloPerPezzo + serviziIvaPerPezzo + commissioniPerPezzo;
+      const costoFinale = costoSenzaPfu + pfuPezzo;
+      const prezzoVendita = costoFinale * (parseFloat(p.markup) || 1);
+
+      return {
+        ...item,
+        cifPerPezzo, dazioPerPezzo, antidumpingPerPezzo, baseIva, ivaPerPezzo,
+        extraNoloPerPezzo, serviziIvaPerPezzo, commissioniPerPezzo, tasseFissePerPezzo,
+        aggiustamentoPerPezzo,
+        pfuPezzo, costoSenzaPfu, costoFinale, prezzoVendita,
+        // Totali riga
+        cifTot: cifPerPezzo * item.qty,
+        dazioTot: dazioPerPezzo * item.qty,
+        ivaTot: ivaPerPezzo * item.qty
+      };
+    });
+
+    // 9) Totali bolla
+    // Valore statistico = somma CIF per pezzo × qty (già include aggiustamento)
+    const valoreStatistico = righe.reduce((s, r) => s + r.cifTot, 0);
+    const dazioTotale = righe.reduce((s, r) => s + r.dazioTot, 0);
+    const antidumpingTotale = righe.reduce((s, r) => s + r.antidumpingPerPezzo * r.qty, 0);
+    const ivaTotale = righe.reduce((s, r) => s + r.ivaTot, 0);
+    const totaleImposizioni = dazioTotale + antidumpingTotale + dirittoTotale9AJ + ivaTotale;
+    const costoTotaleImport = righe.reduce((s, r) => s + r.costoFinale * r.qty, 0);
+
+    // Prezzo articolo (voce 42) = FOB EUR
+    const prezzoArticolo = fobTotEur;
+
+    return {
+      qtyTot, fobTotUsd, fobTotEur, noloTotUsd, noloTotEur, noloPerPezzo,
+      aggiustamentoTot, aggiustamentoPerPezzo,
+      extraNoloTot, extraNoloPerPezzo, serviziIvaTot, serviziIvaPerPezzo,
+      fuelTrasportoImporto, trasportoBase,
+      commissioniPerPezzo, tasseFissePerPezzo, valoreStatistico,
+      dazioTotale, antidumpingTotale, dirittoTotale9AJ, ivaTotale,
+      totaleImposizioni, costoTotaleImport, prezzoArticolo,
+      righe
+    };
+  }, [chinaItems, chinaParams]);
+
+  const confirmChinaImport = () => {
+    if (!chinaCalcolo) { alert('Calcolo non disponibile'); return; }
+    if (!chinaParams.fornitore.trim()) { alert('Inserire nome fornitore'); return; }
+
+    const bollaId = 'bolla_' + Date.now();
+
+    if (bollaMode === 'selection') {
+      // MODALITÀ SELEZIONE: non aggiungere articoli al catalogo, salva solo la bolla
+      const cnSelected = selectedItems.filter(i => i.origine === 'CN');
+      const newItems = chinaCalcolo.righe.map((r, i) => ({
+        id: 'bolla_' + bollaId + '_' + i,
+        bollaId,
+        // Mantengo riferimento all'articolo originale del catalogo (se presente)
+        originalId: cnSelected[i]?.id || null,
+        marca: r.marca, modello: r.modello, misura: r.misura,
+        supplierName: chinaParams.fornitore,
+        origine: 'CN',
+        prezzoOriginale: r.prezzoUsd, currency: 'USD',
+        prezzoEur: Math.round((r.prezzoUsd / chinaParams.tassoEurUsd) * 100) / 100,
+        pfu: Math.round(r.pfuPezzo * 100) / 100,
+        trasportoPerUnit: Math.round((r.extraNoloPerPezzo + chinaCalcolo.noloPerPezzo) * 100) / 100,
+        dazio: Math.round(r.dazioPerPezzo * 100) / 100,
+        iva: Math.round(r.ivaPerPezzo * 100) / 100,
+        prezzoFinale: Math.round(r.costoFinale * 100) / 100,
+        prezzoVendita: Math.round(r.prezzoVendita * 100) / 100,
+        qtyImportata: r.qty
+      }));
+      setBolle([...bolle, {
+        id: bollaId, supplierId: 'selection', data: new Date().toISOString(),
+        params: { ...chinaParams }, calcolo: chinaCalcolo, items: newItems,
+        fromSelection: true
+      }]);
+
+      // Se richiesto, aggiorno i prezzi degli articoli nel catalogo con i costi reali
+      if (updateCatalogOnConfirm) {
+        const updatedItems = allItems.map(it => {
+          if (it.origine !== 'CN') return it;
+          const match = cnSelected.findIndex(s => s.id === it.id);
+          if (match < 0) return it;
+          const r = chinaCalcolo.righe[match];
+          if (!r) return it;
+          return {
+            ...it,
+            pfu: Math.round(r.pfuPezzo * 100) / 100,
+            trasportoPerUnit: Math.round((r.extraNoloPerPezzo + chinaCalcolo.noloPerPezzo) * 100) / 100,
+            dazio: Math.round(r.dazioPerPezzo * 100) / 100,
+            iva: Math.round(r.ivaPerPezzo * 100) / 100,
+            prezzoFinale: Math.round(r.costoFinale * 100) / 100,
+            prezzoVendita: Math.round(r.prezzoVendita * 100) / 100,
+            lastBollaId: bollaId
+          };
+        });
+        setAllItems(updatedItems);
+      }
+
+      // Svuoto la selezione dopo la generazione della bolla
+      setSelectedItems([]);
+      cancelChinaImport();
+      setActiveSection('bolle');
+      return;
+    }
+
+    // MODALITÀ FILE: aggiunge gli articoli nel catalogo (legacy, ora gestita da saveChinaListino)
+    const supplierId = 'cn_' + Date.now();
+    const items = chinaCalcolo.righe.map((r, i) => ({
+      id: supplierId + '_' + i, supplierId, supplierName: chinaParams.fornitore,
+      origine: 'CN', bollaId,
+      marca: r.marca || chinaParams.fornitore,
+      modello: r.modello, misura: r.misura,
+      prezzoOriginale: r.prezzoUsd, currency: 'USD',
+      prezzoEur: Math.round((r.prezzoUsd / chinaParams.tassoEurUsd) * 100) / 100,
+      pfu: Math.round(r.pfuPezzo * 100) / 100,
+      trasportoPerUnit: Math.round((r.extraNoloPerPezzo + chinaCalcolo.noloPerPezzo) * 100) / 100,
+      dazio: Math.round(r.dazioPerPezzo * 100) / 100,
+      iva: Math.round(r.ivaPerPezzo * 100) / 100,
+      prezzoFinale: Math.round(r.costoFinale * 100) / 100,
+      prezzoVendita: Math.round(r.prezzoVendita * 100) / 100,
+      qtyImportata: r.qty
+    }));
+
+    setSuppliers([...suppliers, {
+      id: supplierId, name: chinaParams.fornitore, origine: 'CN',
+      importDate: new Date().toISOString(), itemCount: items.length,
+      qty: chinaCalcolo.qtyTot, currency: 'USD', bollaId
+    }]);
+    setAllItems([...allItems, ...items]);
+    setBolle([...bolle, {
+      id: bollaId, supplierId, data: new Date().toISOString(),
+      params: { ...chinaParams }, calcolo: chinaCalcolo, items: items.map(i => ({ ...i }))
+    }]);
+    cancelChinaImport();
+    setActiveSection('bolle');
+  };
+
+  const cancelChinaImport = () => {
+    setChinaStep('upload'); setChinaRawData([]); setChinaHeaders([]);
+    setChinaMapping({ marca: '', modello: '', misura: '', prezzo: '', qty: '' });
+    setChinaItems([]); setChinaFileName(''); setCurrentBolla(null);
+    setBollaMode('file');
+    if (chinaFileInputRef.current) chinaFileInputRef.current.value = '';
+  };
+
+  // Applica un preset nolo Savino Del Bene
+  const applicaNoloPreset = (presetKey) => {
+    const preset = NOLO_PRESETS[presetKey];
+    if (!preset) return;
+    setNoloPreset(presetKey);
+    setChinaParams(prev => ({
+      ...prev,
+      noloMare: preset.noloMare,
+      fuelSurcharge: preset.fuelSurcharge,
+      ics2Usd: preset.ics2Usd,
+      ecaSurcharge: preset.ecaSurcharge
+    }));
+  };
+
+  // Applica tutti i costi fissi Savino Del Bene
+  const applicaCostiSdb = () => {
+    setChinaParams(prev => ({
+      ...prev,
+      costiSbarco: COSTI_SDB.thcSbarco,
+      addizionaliCompMar: COSTI_SDB.addizionaliCompMar,
+      deliveryOrder: COSTI_SDB.deliveryOrder,
+      doganaImport: COSTI_SDB.doganaImport,
+      trasportoInterno: COSTI_SDB.trasportoInterno,
+      fuelTrasportoPct: COSTI_SDB.fuelTrasportoPct
+    }));
+  };
+
+  // Apre il wizard bolla con gli articoli Cina selezionati
+  const openBollaFromSelection = () => {
+    const cnSelected = selectedItems.filter(i => i.origine === 'CN');
+    if (cnSelected.length === 0) {
+      alert('Selezionare almeno un articolo di origine Cina dal catalogo');
+      return;
+    }
+    // Converto gli item selezionati nel formato chinaItems
+    const items = cnSelected.map((it, idx) => {
+      const qty = it.qtyRichiesta || 1;
+      // Determina fascia PFU se non presente
+      let pfuFascia = it.pfuFascia || '7_15';
+      if (!it.pfuFascia && it.misura) {
+        const m = it.misura.match(/R(\d+)/i);
+        if (m) {
+          const p = parseInt(m[1]);
+          if (p <= 14) pfuFascia = 'fino7';
+          else if (p <= 17) pfuFascia = '7_15';
+          else if (p <= 21) pfuFascia = '15_30';
+          else pfuFascia = '30_60';
+        }
+      }
+      return {
+        idx, marca: it.marca, modello: it.modello, misura: it.misura,
+        qty, prezzoUsd: it.prezzoOriginale || (it.prezzoEur * chinaParams.tassoEurUsd),
+        pfuFascia
+      };
+    });
+    const totalQty = items.reduce((s, i) => s + i.qty, 0);
+    // Auto-suggerisci preset nolo: se >= ~300 pz 40' HC, altrimenti 20'
+    const suggestedPreset = totalQty >= 300 ? 'hcm_40' : 'hcm_20';
+    const preset = NOLO_PRESETS[suggestedPreset];
+
+    setBollaMode('selection');
+    setNoloPreset(suggestedPreset);
+    setChinaItems(items);
+
+    const firstSup = cnSelected[0].supplierName || chinaParams.fornitore;
+    // Un unico setState con tutti i preset applicati contemporaneamente
+    setChinaParams(prev => ({
+      ...prev,
+      fornitore: firstSup,
+      qtyTotale: totalQty,
+      unita9AJ: prev.unita9AJ || 4,
+      // Preset nolo USD
+      noloMare: preset.noloMare,
+      fuelSurcharge: preset.fuelSurcharge,
+      ics2Usd: preset.ics2Usd,
+      ecaSurcharge: preset.ecaSurcharge,
+      // Costi fissi SDB EUR
+      costiSbarco: COSTI_SDB.thcSbarco,
+      addizionaliCompMar: COSTI_SDB.addizionaliCompMar,
+      deliveryOrder: COSTI_SDB.deliveryOrder,
+      doganaImport: COSTI_SDB.doganaImport,
+      trasportoInterno: COSTI_SDB.trasportoInterno,
+      fuelTrasportoPct: COSTI_SDB.fuelTrasportoPct
+    }));
+    setChinaStep('parameters');
+  };
+
+  // ===================================================================
+  // HELPER
+  // ===================================================================
+  const deleteSupplier = (supplierId) => {
+    if (!confirm('Confermare eliminazione fornitore e articoli collegati?')) return;
+    setSuppliers(suppliers.filter(s => s.id !== supplierId));
+    setAllItems(allItems.filter(i => i.supplierId !== supplierId));
+    setSelectedItems(selectedItems.filter(i => i.supplierId !== supplierId));
+    setBolle(bolle.filter(b => b.supplierId !== supplierId));
+  };
+
+  const deleteBolla = (bollaId) => {
+    if (!confirm('Eliminare la bolla doganale?')) return;
+    setBolle(bolle.filter(b => b.id !== bollaId));
+  };
+
+  const toggleSelect = (item) => {
+    const exists = selectedItems.find(i => i.id === item.id);
+    if (exists) setSelectedItems(selectedItems.filter(i => i.id !== item.id));
+    else setSelectedItems([...selectedItems, { ...item, qtyRichiesta: 1 }]);
+  };
+
+  const updateSelectedQty = (id, qty) => {
+    const q = Math.max(1, parseInt(qty) || 1);
+    setSelectedItems(selectedItems.map(i => i.id === id ? { ...i, qtyRichiesta: q } : i));
+  };
+
+  const removeSelected = (id) => setSelectedItems(selectedItems.filter(i => i.id !== id));
+  const clearSelected = () => { if (selectedItems.length > 0 && confirm('Svuotare la selezione?')) setSelectedItems([]); };
+
+  const uniqueMarche = useMemo(() => Array.from(new Set(allItems.map(i => i.marca).filter(Boolean))).sort(), [allItems]);
+
+  const filteredItems = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    let list = allItems.filter(i => {
+      if (filterOrigine && i.origine !== filterOrigine) return false;
+      if (filterSupplier && i.supplierId !== filterSupplier) return false;
+      if (filterMarca && i.marca !== filterMarca) return false;
+      if (!q) return true;
+      return i.marca.toLowerCase().includes(q) || (i.modello || '').toLowerCase().includes(q) || (i.misura || '').toLowerCase().includes(q);
+    });
+    list.sort((a, b) => {
+      let av = a[sortBy.field], bv = b[sortBy.field];
+      if (typeof av === 'string') { av = av.toLowerCase(); bv = (bv || '').toLowerCase(); }
+      if (av < bv) return sortBy.dir === 'asc' ? -1 : 1;
+      if (av > bv) return sortBy.dir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return list;
+  }, [allItems, searchQuery, filterSupplier, filterMarca, filterOrigine, sortBy]);
+
+  const totaleSelezione = useMemo(() => selectedItems.reduce((s, i) => s + i.prezzoFinale * i.qtyRichiesta, 0), [selectedItems]);
+  const qtyTotale = useMemo(() => selectedItems.reduce((s, i) => s + i.qtyRichiesta, 0), [selectedItems]);
+
+  // Confronto fornitori: raggruppa per misura, ordina per prezzo finale crescente
+  const comparisonData = useMemo(() => {
+    if (allItems.length === 0) return [];
+    const map = new Map();
+    const q = compareMisuraQuery.toLowerCase().trim();
+    for (const it of allItems) {
+      const mis = (it.misura || '').trim();
+      if (!mis) continue;
+      if (q && !mis.toLowerCase().includes(q) && !(it.marca || '').toLowerCase().includes(q)) continue;
+      if (!map.has(mis)) map.set(mis, []);
+      map.get(mis).push(it);
+    }
+    // Ordina ogni gruppo per prezzoFinale crescente
+    const groups = [];
+    for (const [misura, items] of map.entries()) {
+      items.sort((a, b) => a.prezzoFinale - b.prezzoFinale);
+      const min = items[0]?.prezzoFinale || 0;
+      const max = items[items.length - 1]?.prezzoFinale || 0;
+      const savings = min > 0 ? ((max - min) / max * 100) : 0;
+      const suppliers = new Set(items.map(i => i.supplierName));
+      groups.push({
+        misura, items, min, max, savings,
+        suppliersCount: suppliers.size,
+        hasEU: items.some(i => i.origine !== 'CN'),
+        hasCN: items.some(i => i.origine === 'CN')
+      });
+    }
+    // Ordina gruppi per numero di fornitori (più fornitori = più scelta) e poi per misura
+    groups.sort((a, b) => b.suppliersCount - a.suppliersCount || a.misura.localeCompare(b.misura));
+    return groups;
+  }, [allItems, compareMisuraQuery]);
+
+  const toggleSort = (field) => setSortBy(s => ({ field, dir: s.field === field && s.dir === 'asc' ? 'desc' : 'asc' }));
+
+  const fmtEur = (n) => new Intl.NumberFormat('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
+  const fmtInt = (n) => new Intl.NumberFormat('it-IT').format(n || 0);
+
+  // ===================================================================
+  // EXPORT
+  // ===================================================================
+  const exportSelection = () => {
+    if (selectedItems.length === 0) { alert('Nessun articolo selezionato'); return; }
+    const rows = selectedItems.map(i => ({
+      'Origine': i.origine, 'Fornitore': i.supplierName, 'Marca': i.marca, 'Modello': i.modello, 'Misura': i.misura,
+      'Prezzo Orig.': i.prezzoOriginale, 'Valuta': i.currency, 'Prezzo EUR': i.prezzoEur,
+      'PFU': i.pfu, 'Trasp./u': i.trasportoPerUnit,
+      'Dazio': i.dazio || 0, 'IVA': i.iva || 0,
+      'Prezzo Finale': i.prezzoFinale, 'Q.tà': i.qtyRichiesta,
+      'Totale': Math.round(i.prezzoFinale * i.qtyRichiesta * 100) / 100
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Selezione');
+    XLSX.writeFile(wb, `selezione_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const exportAll = () => {
+    if (allItems.length === 0) { alert('Archivio vuoto'); return; }
+    const rows = allItems.map(i => ({
+      'Origine': i.origine, 'Fornitore': i.supplierName, 'Marca': i.marca, 'Modello': i.modello, 'Misura': i.misura,
+      'Prezzo EUR': i.prezzoEur, 'PFU': i.pfu, 'Dazio': i.dazio || 0, 'IVA': i.iva || 0,
+      'Prezzo Finale': i.prezzoFinale
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Database');
+    XLSX.writeFile(wb, `database_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  // Export Excel della bolla con calcoli dettagliati (4 fogli)
+  const exportBollaExcel = (bolla) => {
+    const c = bolla.calcolo;
+    const p = bolla.params;
+    // Fallback retro-compatibilità
+    const dirittoTotale9AJ = c.dirittoTotale9AJ !== undefined ? c.dirittoTotale9AJ : (parseFloat(p.dirittoDoganale9AJ) || 0);
+    const antidumpingTotale = c.antidumpingTotale !== undefined ? c.antidumpingTotale : c.valoreStatistico * (p.antidumpingPct || 0) / 100;
+    const wb = XLSX.utils.book_new();
+
+    // FOGLIO 1 — Riepilogo Spedizione
+    const riepilogo = [
+      ['RIEPILOGO BOLLA DOGANALE', ''],
+      ['ID Bolla', bolla.id],
+      ['Data', new Date(bolla.data).toLocaleString('it-IT')],
+      [],
+      ['— DATI SPEDIZIONE —', ''],
+      ['Fornitore', p.fornitore],
+      ['Indirizzo fornitore', p.indirizzoFornitore || ''],
+      ['Fattura n°', p.fattura || ''],
+      ['Nr. riferimento', p.nrRiferimento || ''],
+      ['Incoterm', p.incoterm],
+      ['Porto imbarco', p.portoImbarco],
+      ['Porto sbarco', p.portoSbarco],
+      ['Nave', p.nave || ''],
+      ['Container', p.container || ''],
+      ['Data spedizione', p.dataSpedizione || ''],
+      ['Codice TARIC', p.codiceTaric],
+      ['Regime (37)', p.regime || '4000'],
+      ['Doc. precedente (40)', p.docPrecedente || ''],
+      ['Massa lorda kg', p.massaLorda || 0],
+      ['Massa netta kg', p.massaNetta || 0],
+      [],
+      ['— IMPORTATORE / DICHIARANTE —', ''],
+      ['Importatore', p.importatore],
+      ['P.IVA importatore', p.importatorePiva || ''],
+      ['Indirizzo', p.importatoreIndirizzo || ''],
+      ['Attività', p.importatoreAttivita || ''],
+      ['Dichiarante', p.dichiarante],
+      ['CF dichiarante', p.dichiaranteCf || ''],
+      ['Spedizioniere', p.spedizioniere],
+      [],
+      ['— VALORI BASE —', ''],
+      ['Cambio EUR/USD', p.tassoEurUsd],
+      ['Cambio USD/EUR (calc.)', (1 / p.tassoEurUsd)],
+      ['Totale FOB USD', c.fobTotUsd],
+      ['Totale FOB EUR', c.fobTotEur],
+      ['Aggiustamento (v.45) €', parseFloat(p.aggiustamento) || 0],
+      ['Valore statistico (v.46) €', c.valoreStatistico],
+      ['Quantità totale pezzi', c.qtyTot]
+    ];
+    const wsRiepilogo = XLSX.utils.aoa_to_sheet(riepilogo);
+    wsRiepilogo['!cols'] = [{ wch: 32 }, { wch: 40 }];
+    XLSX.utils.book_append_sheet(wb, wsRiepilogo, 'Riepilogo');
+
+    // FOGLIO 2 — Imposizioni Doganali (voce 47)
+    const imposizioni = [
+      ['CALCOLO IMPOSIZIONI DOGANALI (voce 47)', '', '', '', ''],
+      ['Tipo', 'Descrizione', 'Base Imponibile €', 'Aliquota %', 'Importo €'],
+      ['A00', 'Dazio Doganale', c.valoreStatistico, p.dazioPct, c.dazioTotale]
+    ];
+    if (p.antidumpingPct > 0) {
+      imposizioni.push(['A30', 'Dazio Antidumping', c.valoreStatistico, p.antidumpingPct, antidumpingTotale]);
+    }
+    imposizioni.push(
+      ['9AJ', `Diritto Doganale Marittimo (${p.unita9AJ || 4} × 1,0908 €)`, p.unita9AJ || 4, 1.0908, dirittoTotale9AJ],
+      ['B00', 'IVA Importazione', c.valoreStatistico + c.dazioTotale + antidumpingTotale + dirittoTotale9AJ, p.ivaPct, c.ivaTotale],
+      [],
+      ['', '', '', 'TOTALE IMPOSIZIONI BOLLA', c.totaleImposizioni]
+    );
+    const wsImposizioni = XLSX.utils.aoa_to_sheet(imposizioni);
+    wsImposizioni['!cols'] = [{ wch: 8 }, { wch: 38 }, { wch: 20 }, { wch: 14 }, { wch: 16 }];
+    XLSX.utils.book_append_sheet(wb, wsImposizioni, 'Imposizioni');
+
+    // FOGLIO 3 — Articoli con costi dettagliati
+    const articoli = c.righe.map((r, i) => ({
+      '#': i + 1,
+      'Marca': r.marca || '',
+      'Modello': r.modello || '',
+      'Misura': r.misura || '',
+      'Fascia PFU': r.pfuFascia,
+      'Qty': r.qty,
+      'Prezzo USD/pz': r.prezzoUsd,
+      'Prezzo EUR/pz (FOB)': r.prezzoUsd / p.tassoEurUsd,
+      'Nolo EUR/pz': c.noloPerPezzo,
+      'Aggiustamento/pz': c.aggiustamentoPerPezzo || 0,
+      'CIF EUR/pz (v.stat.)': r.cifPerPezzo,
+      'Dazio A00/pz': r.dazioPerPezzo,
+      'Antidumping/pz': r.antidumpingPerPezzo,
+      '9AJ/pz': r.tasseFissePerPezzo,
+      'Base IVA/pz': r.baseIva,
+      'IVA B00/pz': r.ivaPerPezzo,
+      'Extra nolo art.74/pz': r.extraNoloPerPezzo,
+      'Servizi IVA/pz': r.serviziIvaPerPezzo,
+      'Commissioni/pz': r.commissioniPerPezzo,
+      'PFU/pz': r.pfuPezzo,
+      'COSTO FINALE/pz': r.costoFinale,
+      'Prezzo vendita/pz': r.prezzoVendita,
+      'Totale riga (costo × qty)': r.costoFinale * r.qty,
+      'Totale riga (vendita × qty)': r.prezzoVendita * r.qty
+    }));
+    const wsArticoli = XLSX.utils.json_to_sheet(articoli);
+    // Larghezze colonne ragionevoli
+    wsArticoli['!cols'] = [
+      { wch: 4 }, { wch: 14 }, { wch: 18 }, { wch: 14 }, { wch: 10 }, { wch: 6 },
+      { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 12 },
+      { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 12 }, { wch: 16 }, { wch: 12 },
+      { wch: 14 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 18 }, { wch: 18 }
+    ];
+    XLSX.utils.book_append_sheet(wb, wsArticoli, 'Articoli');
+
+    // FOGLIO 4 — Costi Accessori Ripartiti
+    const costi = [
+      ['COSTI ACCESSORI RIPARTIZIONE', '', ''],
+      ['Voce', 'Totale €', 'Per pezzo €'],
+      [],
+      ['— NOLO MARITTIMO (USD→EUR) —', '', ''],
+      ['Nolo mare USD', parseFloat(p.noloMare) || 0, ''],
+      ['ECA Surcharge USD', parseFloat(p.ecaSurcharge) || 0, ''],
+      ['ICS2 USD', parseFloat(p.ics2Usd) || 0, ''],
+      ['Local Charge orig. USD', parseFloat(p.localChargeUsd) || 0, ''],
+      ['TOT Nolo USD', c.noloTotUsd, ''],
+      ['TOT Nolo EUR (cambio)', c.noloTotEur, c.noloPerPezzo],
+      [],
+      ['— EXTRA NOLO EUR (art.74) —', '', ''],
+      ['THC Sbarco', parseFloat(p.costiSbarco) || 0, ''],
+      ['Addizionali Comp. Marittima', parseFloat(p.addizionaliCompMar) || 0, ''],
+      ['Dogana Import', parseFloat(p.doganaImport) || 0, ''],
+      ['Fuel Surcharge EUR', parseFloat(p.fuelSurcharge) || 0, ''],
+      ['ECA EUR', parseFloat(p.ecaEur) || 0, ''],
+      ['ICS2 EUR', parseFloat(p.ics2Eur) || 0, ''],
+      ['Local Charge EUR', parseFloat(p.localChargeEur) || 0, ''],
+      ['TOT Extra Nolo EUR', c.extraNoloTot, c.extraNoloPerPezzo],
+      [],
+      ['— SERVIZI CON IVA 22% —', '', ''],
+      ['Delivery Order', parseFloat(p.deliveryOrder) || 0, ''],
+      ['Trasporto Interno', c.trasportoBase || parseFloat(p.trasportoInterno) || 0, ''],
+      [`Fuel Trasporto (${p.fuelTrasportoPct || 0}%)`, c.fuelTrasportoImporto || 0, ''],
+      ['IVA Spedizioniere', parseFloat(p.ivaSpedizioniere) || 0, ''],
+      ['TOT Servizi IVA', c.serviziIvaTot, c.serviziIvaPerPezzo],
+      [],
+      ['— VOCI FISSE —', '', ''],
+      ['Aggiustamento (v.45)', parseFloat(p.aggiustamento) || 0, c.aggiustamentoPerPezzo || 0],
+      ['9AJ Diritto Marittimo', dirittoTotale9AJ, c.tasseFissePerPezzo],
+      ['Commissioni', parseFloat(p.commissioni) || 0, c.commissioniPerPezzo],
+      [],
+      ['— IMPOSIZIONI DOGANALI —', '', ''],
+      ['Dazio A00', c.dazioTotale, c.dazioTotale / c.qtyTot],
+      ['Antidumping A30', antidumpingTotale, antidumpingTotale / c.qtyTot],
+      ['9AJ', dirittoTotale9AJ, dirittoTotale9AJ / c.qtyTot],
+      ['IVA B00', c.ivaTotale, c.ivaTotale / c.qtyTot],
+      ['TOT Imposizioni', c.totaleImposizioni, c.totaleImposizioni / c.qtyTot],
+      [],
+      ['— TOTALI FINALI —', '', ''],
+      ['Valore FOB EUR', c.fobTotEur, c.fobTotEur / c.qtyTot],
+      ['Valore statistico', c.valoreStatistico, c.valoreStatistico / c.qtyTot],
+      ['Totale costi accessori', c.extraNoloTot + c.serviziIvaTot + (parseFloat(p.commissioni) || 0), ''],
+      ['COSTO TOTALE IMPORT', c.costoTotaleImport, c.costoTotaleImport / c.qtyTot],
+      ['Markup vendita', p.markup, ''],
+      ['TOTALE VENDITA STIMATO', c.costoTotaleImport * (parseFloat(p.markup) || 1), (c.costoTotaleImport * (parseFloat(p.markup) || 1)) / c.qtyTot]
+    ];
+    const wsCosti = XLSX.utils.aoa_to_sheet(costi);
+    wsCosti['!cols'] = [{ wch: 38 }, { wch: 16 }, { wch: 16 }];
+    XLSX.utils.book_append_sheet(wb, wsCosti, 'Costi');
+
+    const fileName = `bolla_${p.fornitore.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+  };
+
+  // Genera PDF bolla DAU (stile ufficiale - fedele al DAU H1)
+  const generaPdfBolla = (bolla, modalita = 'ufficiale') => {
+    const c = bolla.calcolo;
+    const p = bolla.params;
+    const win = window.open('', '_blank');
+    if (!win) { alert('Abilita popup per generare il PDF'); return; }
+
+    // Retrocompatibilità: le vecchie bolle potrebbero non avere questi campi
+    if (c.dirittoTotale9AJ === undefined) c.dirittoTotale9AJ = parseFloat(p.dirittoDoganale9AJ) || 0;
+    if (c.antidumpingTotale === undefined) c.antidumpingTotale = c.valoreStatistico * (p.antidumpingPct || 0) / 100;
+    if (c.prezzoArticolo === undefined) c.prezzoArticolo = c.fobTotEur;
+
+    const tassoUsdEur = 1 / p.tassoEurUsd;
+    const dataOggi = new Date().toLocaleDateString('it-IT');
+    const dataSpedFmt = p.dataSpedizione ? new Date(p.dataSpedizione).toLocaleDateString('it-IT') : dataOggi;
+    const antidumpingImporto = c.antidumpingTotale;
+
+    const htmlUfficiale = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>DAU H1 - ${p.fornitore}</title>
+<style>
+  @page { size: A4 portrait; margin: 5mm; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Arial', sans-serif; font-size: 8px; color: #000; background: #fff; padding: 2px; }
+
+  .dau-header { text-align: center; font-weight: bold; font-size: 10px; padding: 3px; border: 1.5px solid #000; margin-bottom: 2px; background: #f0f0f0; }
+  .dau-subheader { text-align: center; font-size: 9px; padding: 2px 0 4px; font-weight: bold; }
+
+  .dau-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  .dau-table td { border: 1px solid #000; padding: 2px 3px; vertical-align: top; font-size: 8px; line-height: 1.15; }
+  .cell-num { display: inline-block; background: #000; color: #fff; font-weight: bold; padding: 1px 3px; font-size: 7px; margin-right: 2px; min-width: 14px; text-align: center; }
+  .cell-label { font-size: 7px; color: #333; font-weight: 600; text-transform: uppercase; }
+  .cell-val { font-size: 9px; font-weight: bold; color: #000; }
+  .cell-val.big { font-size: 10px; }
+  .small-label { font-size: 6.5px; color: #555; display: block; }
+
+  .party-block { min-height: 50px; }
+  .party-name { font-size: 9px; font-weight: bold; margin-top: 1px; }
+  .party-addr { font-size: 7.5px; color: #222; line-height: 1.3; }
+
+  .dau-section-title { background: #333; color: #fff; padding: 2px 5px; font-size: 8px; font-weight: bold; margin-top: 3px; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  /* Tabella imposizioni */
+  .imposte-tab { width: 100%; border-collapse: collapse; margin-top: 2px; }
+  .imposte-tab th { background: #333; color: #fff; padding: 3px 5px; font-size: 8px; text-align: left; border: 1px solid #000; }
+  .imposte-tab td { border: 1px solid #000; padding: 3px 5px; font-size: 8px; font-family: 'Consolas', monospace; }
+  .imposte-tab td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .imposte-tab .total-row { background: #222; color: #fff; font-weight: bold; }
+  .imposte-tab .total-row td { color: #fff; border-color: #000; }
+
+  /* Firma */
+  .signature { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .sig-box { border: 1px solid #000; padding: 4px 6px; min-height: 45px; font-size: 8px; }
+  .sig-box b { font-size: 8.5px; }
+
+  /* Menzioni speciali - formato pre */
+  .menzioni-txt { font-family: 'Consolas', monospace; font-size: 7.5px; white-space: pre-line; color: #222; line-height: 1.3; }
+
+  /* Utility */
+  .txt-right { text-align: right; }
+  .txt-center { text-align: center; }
+  .bold { font-weight: bold; }
+  .bg-yellow { background: #fffde7; }
+
+  @media print {
+    body { padding: 0; }
+    .no-print { display: none !important; }
+  }
+  .no-print-btn { position: fixed; bottom: 15px; right: 15px; background: #1976d2; color: #fff; border: none; padding: 10px 20px; font-size: 12px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.25); border-radius: 3px; z-index: 1000; }
+  .no-print-btn:hover { background: #0d47a1; }
+</style></head><body>
+
+<div class="dau-header">DATI TRASMESSI ALLA DOGANA IN H1 A UFFICIO DI SPEDIZIONE/ESPORTAZIONE/DESTINATARIO</div>
+<div class="dau-subheader">DOGANA DI AUGUSTA — SOT AUGUSTA — TRASMESSI DA</div>
+
+<!-- PRIMA RIGA: Speditore + Formulari/Dichiarazione -->
+<table class="dau-table">
+  <colgroup>
+    <col style="width:40%"><col style="width:12%"><col style="width:13%"><col style="width:10%"><col style="width:12%"><col style="width:13%">
+  </colgroup>
+  <tr>
+    <td rowspan="2" class="party-block">
+      <span class="cell-num">2</span><span class="cell-label">Speditore/Esportatore  N. CN0</span>
+      <div class="party-name">${p.fornitore || '—'}</div>
+      <div class="party-addr">${p.indirizzoFornitore || ''}</div>
+      <div style="margin-top:2px;font-size:7px;color:#666;"><b>IM</b></div>
+    </td>
+    <td><span class="cell-num">3</span><span class="cell-label">Formulari</span><div class="cell-val">1  1</div></td>
+    <td><span class="cell-num">1</span><span class="cell-label">DICHIARAZIONE</span><div class="cell-val">Altro ICS (S32)</div></td>
+    <td><span class="cell-num">4</span><span class="cell-label">Dati Carico</span></td>
+    <td><span class="cell-num">5</span><span class="cell-label">Articoli</span><div class="cell-val">1</div></td>
+    <td><span class="cell-num">6</span><span class="cell-label">Totale Colli</span><div class="cell-val">${c.qtyTot}</div></td>
+  </tr>
+  <tr>
+    <td colspan="5"><span class="cell-num">7</span><span class="cell-label">Numeri di Riferimento</span><div class="cell-val" style="font-family:'Consolas',monospace;font-size:8px;">${p.nrRiferimento || '—'}</div></td>
+  </tr>
+</table>
+
+<!-- Importatore + Dichiarante -->
+<table class="dau-table">
+  <colgroup><col style="width:50%"><col style="width:50%"></colgroup>
+  <tr>
+    <td class="party-block">
+      <span class="cell-num">8</span><span class="cell-label">Importatore N. ${p.importatorePiva || ''}</span>
+      <div class="party-name">${p.importatore || '—'}</div>
+      <div class="party-addr">${p.importatoreAttivita || ''}<br>${p.importatoreIndirizzo || ''}</div>
+    </td>
+    <td class="party-block">
+      <span class="cell-num">14</span><span class="cell-label">Dichiarante/Rappresentante N. ${p.dichiaranteCf || ''}  2</span>
+      <div class="party-name">${p.dichiarante || '—'}</div>
+      <div class="party-addr">${p.dichiaranteIndirizzo || ''}</div>
+    </td>
+  </tr>
+</table>
+
+<!-- Riga trasporto e paese -->
+<table class="dau-table">
+  <colgroup>
+    <col style="width:25%"><col style="width:8%"><col style="width:10%"><col style="width:10%"><col style="width:8%"><col style="width:13%"><col style="width:13%"><col style="width:13%">
+  </colgroup>
+  <tr>
+    <td><span class="cell-num">18</span><span class="cell-label">Identità e nazionalità mezzo di trasporto all'arrivo</span>
+      <div class="cell-val">${p.nave ? 'NAVE ' + p.nave : 'NAVE'} ${dataSpedFmt} IT</div>
+    </td>
+    <td><span class="cell-num">19</span><span class="cell-label">Ctr.</span><div class="cell-val">1</div></td>
+    <td><span class="cell-num">21</span><span class="cell-label">Ident. mezzo frontiera</span><div class="cell-val">&nbsp;</div></td>
+    <td><span class="cell-num">25</span><span class="cell-label">Modo trasp. frontiera</span><div class="cell-val">1</div></td>
+    <td><span class="cell-num">26</span><span class="cell-label">Modo interno</span><div class="cell-val">1</div></td>
+    <td><span class="cell-num">29</span><span class="cell-label">Uff. Dichiarazione</span><div class="cell-val" style="font-size:8px;">${p.ufficioDogana || 'IT099101'}</div></td>
+    <td><span class="cell-num">30</span><span class="cell-label">Localizz. merci</span><div class="cell-val">${p.localizzazioneMerci || '-FE'}</div></td>
+    <td><span class="cell-num">9</span><span class="cell-label">Nulla Osta</span><div class="cell-val">&nbsp;</div></td>
+  </tr>
+</table>
+
+<!-- Paesi e condizioni -->
+<table class="dau-table">
+  <colgroup>
+    <col style="width:15%"><col style="width:15%"><col style="width:20%"><col style="width:20%"><col style="width:15%"><col style="width:15%">
+  </colgroup>
+  <tr>
+    <td><span class="cell-num">15</span><span class="cell-label">Paese spedizione/export</span><div class="cell-val">CINA</div><span class="small-label">CN</span></td>
+    <td><span class="cell-num">16</span><span class="cell-label">Paese origine</span><div class="cell-val">CINA</div><span class="small-label">CN</span></td>
+    <td><span class="cell-num">17</span><span class="cell-label">Paese destinazione</span><div class="cell-val">ITALIA</div><span class="small-label">IT — CT</span></td>
+    <td><span class="cell-num">20</span><span class="cell-label">Condizioni di consegna</span><div class="cell-val">${p.incoterm || 'FOB'} ${p.portoImbarco || 'QINGDAO'}</div><span class="small-label">3</span></td>
+    <td><span class="cell-num">22</span><span class="cell-label">Moneta ed importo fatturato</span><div class="cell-val">USD ${fmtEur(c.fobTotUsd)}</div></td>
+    <td><span class="cell-num">24</span><span class="cell-label">Nat. transaz.</span><div class="cell-val">1 1</div></td>
+  </tr>
+  <tr>
+    <td colspan="2"><span class="cell-num">23</span><span class="cell-label">Tasso di cambio</span><div class="cell-val">${p.tassoEurUsd.toFixed(6)}</div></td>
+    <td colspan="2"><span class="cell-num">12</span><span class="cell-label">Elementi del valore</span><div class="cell-val">${fmtEur(c.fobTotEur)}</div></td>
+    <td><span class="cell-num">10</span><span class="cell-label">Paese ult. destin.</span><div class="cell-val">&nbsp;</div></td>
+    <td><span class="cell-num">11</span><span class="cell-label">Paese transaz./produz.</span><div class="cell-val">&nbsp;</div></td>
+  </tr>
+</table>
+
+<!-- Colli e descrizione merci -->
+<table class="dau-table">
+  <colgroup><col style="width:100%"></colgroup>
+  <tr>
+    <td>
+      <span class="cell-num">31</span><span class="cell-label">Colli e designazione delle merci — Marchi e numeri / N contenitori / Quantità e natura</span>
+      <div class="cell-val" style="margin-top:2px;">${p.container || '—'}</div>
+      <div style="font-family:'Consolas',monospace;font-size:8px;margin-top:1px;">PP PEZZI ${c.qtyTot} — VAL.FATT ${fmtEur(c.fobTotUsd)} USD</div>
+      <div class="bold" style="font-size:9px;margin-top:2px;">PNEUMATICI NUOVI PER AUTOVETTURE, ETC.</div>
+    </td>
+  </tr>
+</table>
+
+<!-- Articolo 1 - Blocco dettaglio articolo -->
+<table class="dau-table">
+  <colgroup>
+    <col style="width:8%"><col style="width:17%"><col style="width:10%"><col style="width:13%"><col style="width:10%"><col style="width:13%"><col style="width:13%"><col style="width:16%">
+  </colgroup>
+  <tr>
+    <td><span class="cell-num">32</span><span class="cell-label">Articolo N.</span><div class="cell-val">1</div></td>
+    <td><span class="cell-num">33</span><span class="cell-label">Codice delle merci</span><div class="cell-val bg-yellow">${p.codiceTaric}</div></td>
+    <td><span class="cell-num">34</span><span class="cell-label">Cod. P. origine</span><div class="cell-val">a CN b</div></td>
+    <td><span class="cell-num">35</span><span class="cell-label">Massa Lorda (kg)</span><div class="cell-val">${p.massaLorda ? fmtEur(p.massaLorda) : '—'}</div></td>
+    <td><span class="cell-num">36</span><span class="cell-label">Preferenze</span><div class="cell-val">${p.preferenze || '100'}</div></td>
+    <td><span class="cell-num">37</span><span class="cell-label">REGIME</span><div class="cell-val bg-yellow">${p.regime || '4000'}</div></td>
+    <td><span class="cell-num">38</span><span class="cell-label">Massa Netta (kg)</span><div class="cell-val">${p.massaNetta ? fmtEur(p.massaNetta) : '—'}</div></td>
+    <td><span class="cell-num">39</span><span class="cell-label">Contingenti</span><div class="cell-val">&nbsp;</div></td>
+  </tr>
+  <tr>
+    <td colspan="4"><span class="cell-num">40</span><span class="cell-label">Dichiarazione sommaria / Documento precedente</span><div class="cell-val" style="font-family:'Consolas',monospace;font-size:8px;">337  ${p.docPrecedente || '—'}</div></td>
+    <td colspan="2"><span class="cell-num">41</span><span class="cell-label">Unità supplementari</span><div class="cell-val">SI ${fmtEur(c.qtyTot)}</div></td>
+    <td colspan="2"><span class="cell-num">42</span><span class="cell-label">Prezzo dell'articolo</span><div class="cell-val">${fmtEur(c.prezzoArticolo)} 1</div></td>
+  </tr>
+  <tr>
+    <td colspan="2"><span class="cell-num">43</span><span class="cell-label">Cod. M.V.</span><div class="cell-val">Codice MS</div></td>
+    <td colspan="2"><span class="cell-num">45</span><span class="cell-label">Aggiustamento</span><div class="cell-val">${fmtEur(p.aggiustamento || 0)}</div></td>
+    <td colspan="4"><span class="cell-num">46</span><span class="cell-label">Valore statistico</span><div class="cell-val big bg-yellow">${fmtEur(c.valoreStatistico)}</div></td>
+  </tr>
+</table>
+
+<!-- Menzioni speciali 44 -->
+<table class="dau-table">
+  <colgroup><col style="width:100%"></colgroup>
+  <tr>
+    <td>
+      <span class="cell-num">44</span><span class="cell-label">Menzioni speciali / Documenti presentati / Certificati ed autorizzazioni</span>
+      <div class="menzioni-txt">${p.menzioniSpeciali || '—'}</div>
+    </td>
+  </tr>
+</table>
+
+<!-- 47 IMPOSIZIONI -->
+<div class="dau-section-title">47 — CALCOLO DELLE IMPOSIZIONI</div>
+<table class="imposte-tab">
+  <thead>
+    <tr>
+      <th style="width:8%">Tipo</th>
+      <th>Descrizione</th>
+      <th class="num" style="width:18%">Base Imponibile</th>
+      <th class="num" style="width:15%">Aliquota %</th>
+      <th class="num" style="width:18%">Importo €</th>
+      <th style="width:5%">MP</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="bold">A00</td><td>Dazio Doganale</td>
+      <td class="num">${fmtEur(c.valoreStatistico)}</td>
+      <td class="num">${p.dazioPct.toFixed(4).replace('.', ',')}</td>
+      <td class="num bold">${fmtEur(c.dazioTotale)}</td>
+      <td class="txt-center">E</td>
+    </tr>
+    ${p.antidumpingPct > 0 ? `<tr>
+      <td class="bold">A30</td><td>Dazio Antidumping</td>
+      <td class="num">${fmtEur(c.valoreStatistico)}</td>
+      <td class="num">${p.antidumpingPct.toFixed(4).replace('.', ',')}</td>
+      <td class="num bold">${fmtEur(antidumpingImporto)}</td>
+      <td class="txt-center">E</td>
+    </tr>` : ''}
+    <tr>
+      <td class="bold">9AJ</td><td>Diritto Doganale Marittimo</td>
+      <td class="num">${fmtEur(p.unita9AJ || 4)}</td>
+      <td class="num">1,0908000</td>
+      <td class="num bold">${fmtEur(c.dirittoTotale9AJ)}</td>
+      <td class="txt-center">G</td>
+    </tr>
+    <tr>
+      <td class="bold">B00</td><td>IVA Importazione</td>
+      <td class="num">${fmtEur(c.valoreStatistico + c.dazioTotale + antidumpingImporto + c.dirittoTotale9AJ)}</td>
+      <td class="num">${p.ivaPct.toFixed(4).replace('.', ',')}</td>
+      <td class="num bold">${fmtEur(c.ivaTotale)}</td>
+      <td class="txt-center">G</td>
+    </tr>
+    <tr class="total-row">
+      <td colspan="4" class="bold txt-right">TOTALE IMPOSIZIONI BOLLA</td>
+      <td class="num bold">${fmtEur(c.totaleImposizioni)}</td>
+      <td></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- Dilazione e firme -->
+<table class="dau-table" style="margin-top:3px;">
+  <colgroup><col style="width:50%"><col style="width:50%"></colgroup>
+  <tr>
+    <td><span class="cell-num">48</span><span class="cell-label">Dilazione di pagamento</span><div class="cell-val" style="font-family:'Consolas',monospace;font-size:8px;">${p.dilazionePagamento || '—'}</div></td>
+    <td><span class="cell-num">49</span><span class="cell-label">Identificazione del deposito</span><div class="cell-val">B Dati contabili</div></td>
+  </tr>
+</table>
+
+<div class="signature">
+  <div class="sig-box">
+    <b>C — UFFICIO DI PARTENZA</b><br>
+    DOGANA DI AUGUSTA — SOT AUGUSTA
+    <div style="margin-top:8px;"><b>52</b> Garanzia — Codice __________</div>
+    <div><b>53</b> Ufficio di destinazione (e paese) __________</div>
+    <div style="margin-top:6px;"><b>CONTROLLO UFFICIO DESTINAZIONE</b>: Risultato __________</div>
+    <div>Suggelli apposti: Numero __________  marche __________</div>
+    <div>Termine (data limite): __________   Firma: __________</div>
+  </div>
+  <div class="sig-box">
+    <b>54 — LUOGO E DATA</b><br>
+    AUGUSTA ${dataOggi}<br><br>
+    Firma e nome del dichiarante/rappresentante:<br>
+    <div style="margin-top:15px; border-top: 1px solid #000; padding-top:3px;">
+      <b>${p.dichiarante || 'DIOLOSA\' ROSSELLA ADELE'}</b><br>
+      <span style="font-size:7.5px;">DOGANALISTA</span>
+    </div>
+  </div>
+</div>
+
+<button class="no-print-btn no-print" onclick="window.print()">🖨 STAMPA / SALVA PDF</button>
+
+</body></html>`;
+
+    const htmlSemplificato = `<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>Riepilogo Importazione ${p.fornitore}</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; color: #263238; margin: 0; padding: 12px; }
+  h1 { font-size: 18px; color: #0d47a1; border-bottom: 2px solid #0d47a1; padding-bottom: 6px; margin: 0 0 12px 0; }
+  h2 { font-size: 13px; color: #37474f; background: #eceff1; padding: 5px 8px; margin: 12px 0 6px 0; border-left: 3px solid #1976d2; }
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; margin-bottom: 10px; font-size: 10px; }
+  .info-grid .lbl { color: #546e7a; font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 10px; font-size: 10px; }
+  th { background: #37474f; color: white; text-align: left; padding: 5px 8px; font-weight: 600; }
+  td { padding: 4px 8px; border-bottom: 1px solid #cfd8dc; }
+  tr:nth-child(even) td { background: #f5f7fa; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; font-family: 'Consolas', monospace; }
+  .tot-row { background: #1976d2 !important; color: white; font-weight: bold; }
+  .tot-row td { background: #1976d2 !important; color: white; }
+  .summary-box { background: #e3f2fd; border: 1px solid #1976d2; padding: 10px; margin-top: 15px; }
+  .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 20px; font-size: 11px; }
+  .summary-grid b { color: #0d47a1; }
+  .price-final { color: #0d47a1; font-weight: bold; }
+  @media print { .no-print { display: none; } body { padding: 0; } }
+  .no-print-btn { position: fixed; bottom: 15px; right: 15px; background: #1976d2; color: #fff; border: none; padding: 10px 20px; font-size: 12px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.25); border-radius: 3px; z-index: 1000; }
+</style></head><body>
+
+<h1>Riepilogo Importazione Doganale</h1>
+
+<h2>Dati Spedizione</h2>
+<div class="info-grid">
+  <div><span class="lbl">Fornitore:</span> ${p.fornitore}</div>
+  <div><span class="lbl">Fattura n°:</span> ${p.fattura || '—'}</div>
+  <div><span class="lbl">Porto imbarco:</span> ${p.portoImbarco || '—'}</div>
+  <div><span class="lbl">Porto sbarco:</span> ${p.portoSbarco || '—'}</div>
+  <div><span class="lbl">Nave:</span> ${p.nave || '—'}</div>
+  <div><span class="lbl">Container:</span> ${p.container || '—'}</div>
+  <div><span class="lbl">Incoterm:</span> ${p.incoterm}</div>
+  <div><span class="lbl">Data:</span> ${dataSpedFmt}</div>
+  <div><span class="lbl">Spedizioniere:</span> ${p.spedizioniere}</div>
+  <div><span class="lbl">Importatore:</span> ${p.importatore} (${p.importatorePiva || ''})</div>
+</div>
+
+<h2>Parametri Valutari</h2>
+<div class="info-grid">
+  <div><span class="lbl">Tasso EUR/USD:</span> ${p.tassoEurUsd.toFixed(6)}</div>
+  <div><span class="lbl">Tasso USD/EUR:</span> ${tassoUsdEur.toFixed(6)}</div>
+  <div><span class="lbl">Totale FOB USD:</span> $ ${fmtEur(c.fobTotUsd)}</div>
+  <div><span class="lbl">Totale FOB EUR:</span> € ${fmtEur(c.fobTotEur)}</div>
+  <div><span class="lbl">Aggiustamento (v.45):</span> € ${fmtEur(p.aggiustamento || 0)}</div>
+  <div><span class="lbl">Valore Statistico (v.46):</span> € ${fmtEur(c.valoreStatistico)}</div>
+  <div><span class="lbl">Quantità totale:</span> ${c.qtyTot} pz</div>
+  <div><span class="lbl">Codice TARIC:</span> ${p.codiceTaric}</div>
+</div>
+
+<h2>Costi Accessori</h2>
+<table>
+  <thead><tr><th>Voce</th><th class="num">Totale</th><th class="num">Per pezzo</th></tr></thead>
+  <tbody>
+    <tr><td>Nolo marittimo USD (convertito EUR)</td><td class="num">€ ${fmtEur(c.noloTotEur)}</td><td class="num">€ ${fmtEur(c.noloPerPezzo)}</td></tr>
+    <tr><td>Extra Nolo locale (art.74)</td><td class="num">€ ${fmtEur(c.extraNoloTot)}</td><td class="num">€ ${fmtEur(c.extraNoloPerPezzo)}</td></tr>
+    <tr><td>Servizi con IVA 22%</td><td class="num">€ ${fmtEur(c.serviziIvaTot)}</td><td class="num">€ ${fmtEur(c.serviziIvaPerPezzo)}</td></tr>
+    <tr><td>Commissioni</td><td class="num">€ ${fmtEur(parseFloat(p.commissioni) || 0)}</td><td class="num">€ ${fmtEur(c.commissioniPerPezzo)}</td></tr>
+  </tbody>
+</table>
+
+<h2>Imposizioni Doganali</h2>
+<table>
+  <thead><tr><th>Codice</th><th>Descrizione</th><th class="num">Base Imp.</th><th class="num">Aliquota</th><th class="num">Importo</th></tr></thead>
+  <tbody>
+    <tr><td>A00</td><td>Dazio Doganale</td><td class="num">€ ${fmtEur(c.valoreStatistico)}</td><td class="num">${p.dazioPct}%</td><td class="num">€ ${fmtEur(c.dazioTotale)}</td></tr>
+    ${p.antidumpingPct > 0 ? `<tr><td>A30</td><td>Antidumping</td><td class="num">€ ${fmtEur(c.valoreStatistico)}</td><td class="num">${p.antidumpingPct}%</td><td class="num">€ ${fmtEur(antidumpingImporto)}</td></tr>` : ''}
+    <tr><td>9AJ</td><td>Diritto Doganale Marittimo (${p.unita9AJ || 4} unità × 1,0908 €)</td><td class="num">${fmtEur(p.unita9AJ || 4)}</td><td class="num">1,0908</td><td class="num">€ ${fmtEur(c.dirittoTotale9AJ)}</td></tr>
+    <tr><td>B00</td><td>IVA Importazione</td><td class="num">€ ${fmtEur(c.valoreStatistico + c.dazioTotale + antidumpingImporto + c.dirittoTotale9AJ)}</td><td class="num">${p.ivaPct}%</td><td class="num">€ ${fmtEur(c.ivaTotale)}</td></tr>
+    <tr class="tot-row"><td colspan="4">TOTALE IMPOSIZIONI BOLLA</td><td class="num">€ ${fmtEur(c.totaleImposizioni)}</td></tr>
+  </tbody>
+</table>
+
+<h2>Dettaglio Articoli</h2>
+<table>
+  <thead>
+    <tr>
+      <th>#</th><th>Modello</th><th>Misura</th><th class="num">Qty</th>
+      <th class="num">USD/pz</th><th class="num">CIF €</th><th class="num">Dazio €</th>
+      <th class="num">IVA €</th><th class="num">PFU €</th>
+      <th class="num">Costo finale €</th><th class="num">Prezzo vend. €</th>
+    </tr>
+  </thead>
+  <tbody>
+    ${c.righe.map((r, i) => `
+      <tr>
+        <td>${i + 1}</td><td>${r.modello || '—'}</td><td>${r.misura || '—'}</td>
+        <td class="num">${r.qty}</td><td class="num">${fmtEur(r.prezzoUsd)}</td>
+        <td class="num">${fmtEur(r.cifPerPezzo)}</td><td class="num">${fmtEur(r.dazioPerPezzo)}</td>
+        <td class="num">${fmtEur(r.ivaPerPezzo)}</td><td class="num">${fmtEur(r.pfuPezzo)}</td>
+        <td class="num price-final">${fmtEur(r.costoFinale)}</td>
+        <td class="num price-final">${fmtEur(r.prezzoVendita)}</td>
+      </tr>
+    `).join('')}
+  </tbody>
+</table>
+
+<div class="summary-box">
+  <h2 style="margin-top:0; background:transparent; color:#0d47a1; border:none; padding:0;">RIEPILOGO FINALE</h2>
+  <div class="summary-grid">
+    <div>Valore FOB Totale: <b>€ ${fmtEur(c.fobTotEur)}</b></div>
+    <div>Valore Statistico (CIF + aggiust.): <b>€ ${fmtEur(c.valoreStatistico)}</b></div>
+    <div>Totale Dazio + IVA + Diritti: <b>€ ${fmtEur(c.totaleImposizioni)}</b></div>
+    <div>Totale Costi Accessori: <b>€ ${fmtEur(c.extraNoloTot + c.serviziIvaTot + (parseFloat(p.commissioni) || 0))}</b></div>
+    <div style="grid-column: 1 / -1; border-top: 1px solid #0d47a1; padding-top: 6px; margin-top: 4px; font-size: 13px;">
+      <b>COSTO TOTALE IMPORTAZIONE: € ${fmtEur(c.costoTotaleImport)}</b>
+    </div>
+    <div style="grid-column: 1 / -1; font-size: 12px;">
+      Costo medio per pneumatico: <b>€ ${fmtEur(c.costoTotaleImport / c.qtyTot)}</b>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top: 20px; font-size: 9px; color: #78909c; text-align: center;">
+  Documento generato il ${dataOggi} — Gestionale EU-Import v1.2
+</div>
+
+<button class="no-print-btn no-print" onclick="window.print()">🖨 STAMPA / SALVA PDF</button>
+
+</body></html>`;
+
+    win.document.write(modalita === 'ufficiale' ? htmlUfficiale : htmlSemplificato);
+    win.document.close();
+  };
+
+  // ===================================================================
+  // RENDER
+  // ===================================================================
+  if (loading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#eceff1', color: '#37474f', fontFamily: 'Segoe UI, Tahoma, sans-serif', fontSize: 12 }}>
+        Caricamento archivio in corso...
+      </div>
+    );
+  }
+
+  const previewRows = rawData.slice(1, 6);
+  const chinaPreviewRows = chinaRawData.slice(1, 6);
+  const today = new Date().toLocaleDateString('it-IT');
+  const now = new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+
+  // Aggiorna parametro Cina
+  const setP = (k, v) => setChinaParams(prev => ({ ...prev, [k]: v }));
+
+  return (
+    <div className="erp">
+      <style>{`
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        .erp { min-height: 100vh; background: #eceff1; color: #263238; font-family: 'Segoe UI', Tahoma, 'Liberation Sans', sans-serif; font-size: 12px; line-height: 1.4; -webkit-font-smoothing: antialiased; }
+
+        .menubar { background: linear-gradient(to bottom, #455a64 0%, #37474f 100%); color: #eceff1; padding: 0; display: flex; align-items: center; border-bottom: 1px solid #263238; font-size: 12px; height: 28px; }
+        .menubar-brand { padding: 0 14px; font-weight: 700; letter-spacing: 0.3px; height: 100%; display: flex; align-items: center; gap: 8px; background: #263238; border-right: 1px solid #1c262a; }
+        .menubar-item { padding: 0 12px; height: 100%; display: flex; align-items: center; cursor: pointer; border-right: 1px solid rgba(255,255,255,0.08); color: #cfd8dc; }
+        .menubar-item:hover { background: rgba(255,255,255,0.1); color: #fff; }
+        .menubar-right { margin-left: auto; display: flex; align-items: center; gap: 0; height: 100%; }
+        .menubar-right-item { padding: 0 12px; height: 100%; display: flex; align-items: center; gap: 6px; color: #b0bec5; border-left: 1px solid rgba(255,255,255,0.08); font-size: 11px; }
+        .menubar-right-item.status { color: #81c784; }
+        .menubar-right-item .dot { width: 7px; height: 7px; border-radius: 50%; background: #4caf50; box-shadow: 0 0 4px rgba(76,175,80,0.8); }
+
+        .toolbar { background: #cfd8dc; border-bottom: 1px solid #90a4ae; padding: 6px 10px; display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+        .tbtn { background: linear-gradient(to bottom, #fafafa 0%, #e0e0e0 100%); border: 1px solid #90a4ae; padding: 5px 10px; font-family: inherit; font-size: 11px; color: #263238; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; border-radius: 2px; height: 26px; }
+        .tbtn:hover { background: linear-gradient(to bottom, #fff 0%, #eceff1 100%); border-color: #546e7a; }
+        .tbtn:active { background: #cfd8dc; box-shadow: inset 0 1px 2px rgba(0,0,0,0.15); }
+        .tbtn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .tbtn.primary { background: linear-gradient(to bottom, #42a5f5 0%, #1976d2 100%); color: #fff; border-color: #1565c0; font-weight: 600; }
+        .tbtn.primary:hover { background: linear-gradient(to bottom, #64b5f6 0%, #1e88e5 100%); }
+        .tbtn.china { background: linear-gradient(to bottom, #ef5350 0%, #c62828 100%); color: #fff; border-color: #b71c1c; font-weight: 600; }
+        .tbtn.china:hover { background: linear-gradient(to bottom, #e57373 0%, #d32f2f 100%); }
+        .tbtn.success { background: linear-gradient(to bottom, #66bb6a 0%, #388e3c 100%); color: #fff; border-color: #2e7d32; font-weight: 600; }
+        .tbtn.success:hover { background: linear-gradient(to bottom, #81c784 0%, #43a047 100%); }
+        .tbtn.danger { color: #c62828; }
+        .tbtn.danger:hover { background: #ffebee; border-color: #c62828; }
+        .tb-sep { width: 1px; height: 20px; background: #90a4ae; margin: 0 4px; }
+        .tb-label { font-size: 11px; color: #455a64; font-weight: 600; margin: 0 6px 0 2px; }
+        .tb-input { background: #fff; border: 1px solid #90a4ae; padding: 3px 6px; font-family: inherit; font-size: 11px; height: 26px; width: 70px; border-radius: 2px; }
+        .tb-input:focus { outline: none; border-color: #1976d2; box-shadow: 0 0 0 2px rgba(25,118,210,0.2); }
+
+        .workspace { display: grid; grid-template-columns: 220px 1fr; height: calc(100vh - 56px); }
+        @media (max-width: 900px) { .workspace { grid-template-columns: 1fr; height: auto; } }
+
+        .sidenav { background: #fff; border-right: 1px solid #b0bec5; display: flex; flex-direction: column; overflow-y: auto; }
+        .sidenav-header { background: #eceff1; border-bottom: 1px solid #b0bec5; padding: 8px 12px; font-size: 10px; font-weight: 700; color: #546e7a; text-transform: uppercase; letter-spacing: 0.8px; }
+        .sidenav-item { padding: 8px 12px; font-size: 12px; color: #37474f; cursor: pointer; display: flex; align-items: center; gap: 8px; border-left: 3px solid transparent; border-bottom: 1px solid #f5f5f5; }
+        .sidenav-item:hover { background: #f5f7fa; }
+        .sidenav-item.active { background: #e3f2fd; border-left-color: #1976d2; color: #0d47a1; font-weight: 600; }
+        .sidenav-item .badge { margin-left: auto; background: #eceff1; color: #546e7a; font-size: 10px; padding: 1px 6px; border-radius: 8px; font-weight: 600; }
+        .sidenav-item.active .badge { background: #1976d2; color: #fff; }
+        .sidenav-stats { padding: 10px 12px; border-top: 1px solid #b0bec5; background: #f5f7fa; font-size: 11px; }
+        .sidenav-stat { display: flex; justify-content: space-between; padding: 3px 0; color: #546e7a; }
+        .sidenav-stat b { color: #263238; font-weight: 700; }
+
+        .content { background: #eceff1; overflow-y: auto; display: flex; flex-direction: column; }
+
+        .window { background: #fff; border: 1px solid #90a4ae; margin: 8px; display: flex; flex-direction: column; flex: 1; }
+        .window-title { background: linear-gradient(to bottom, #546e7a 0%, #455a64 100%); color: #fff; padding: 5px 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.3px; display: flex; align-items: center; justify-content: space-between; text-transform: uppercase; }
+        .window-title.china-title { background: linear-gradient(to bottom, #c62828 0%, #b71c1c 100%); }
+        .window-title .breadcrumb { font-weight: 400; font-size: 10px; color: #cfd8dc; text-transform: none; letter-spacing: 0; }
+
+        .filters { background: #f5f7fa; border-bottom: 1px solid #cfd8dc; padding: 8px 10px; display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; align-items: end; }
+        .fld { display: flex; flex-direction: column; gap: 3px; }
+        .fld label { font-size: 10px; color: #546e7a; font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
+        .fld label .req { color: #d32f2f; margin-left: 2px; }
+        .fld .ctl { background: #fff; border: 1px solid #90a4ae; padding: 5px 8px; font-family: inherit; font-size: 12px; color: #263238; height: 28px; border-radius: 2px; }
+        .fld .ctl:focus { outline: none; border-color: #1976d2; box-shadow: 0 0 0 2px rgba(25,118,210,0.2); }
+        .fld .ctl[readonly] { background: #eceff1; color: #546e7a; }
+        .fld .ctl.calc { background: #e8f5e9; color: #1b5e20; font-weight: 600; font-family: 'Consolas', monospace; }
+
+        .grid-wrap { flex: 1; overflow: auto; background: #fff; border-top: 1px solid #cfd8dc; }
+        table.grid { width: 100%; border-collapse: collapse; font-size: 12px; }
+        table.grid thead th { background: linear-gradient(to bottom, #eceff1 0%, #cfd8dc 100%); color: #263238; font-size: 11px; font-weight: 700; text-align: left; padding: 6px 8px; border: 1px solid #90a4ae; border-top: none; position: sticky; top: 0; z-index: 1; cursor: pointer; user-select: none; white-space: nowrap; text-transform: uppercase; letter-spacing: 0.3px; }
+        table.grid thead th:hover { background: linear-gradient(to bottom, #f5f7fa 0%, #b0bec5 100%); }
+        table.grid thead th.num { text-align: right; }
+        table.grid thead th .si { color: #1976d2; margin-left: 3px; font-size: 10px; }
+        table.grid tbody td { padding: 4px 8px; border: 1px solid #e0e0e0; color: #263238; vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
+        table.grid.compact tbody td { padding: 1px 6px; font-size: 11px; }
+        table.grid.compact thead th { padding: 3px 6px; font-size: 10px; }
+        table.grid tbody td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: 'Consolas', 'Courier New', monospace; }
+        table.grid tbody tr { cursor: pointer; background: #fff; }
+        table.grid tbody tr:nth-child(even) { background: #fafafa; }
+        table.grid tbody tr:hover { background: #e3f2fd !important; }
+        table.grid tbody tr.selected { background: #fff9c4 !important; }
+        table.grid tbody tr.selected:hover { background: #fff59d !important; }
+
+        .chk { display: inline-block; width: 13px; height: 13px; border: 1px solid #607d8b; background: #fff; vertical-align: middle; text-align: center; line-height: 11px; color: #2e7d32; font-weight: 900; font-size: 11px; }
+        .chk.on { background: #c8e6c9; border-color: #2e7d32; }
+
+        .tag-sup { background: #eceff1; border: 1px solid #b0bec5; padding: 1px 6px; font-size: 10px; font-family: 'Consolas', monospace; color: #37474f; border-radius: 2px; }
+        .tag-mis { background: #fff; border: 1px solid #90a4ae; padding: 1px 6px; font-size: 11px; font-family: 'Consolas', monospace; color: #263238; font-weight: 600; border-radius: 2px; }
+        .tag-cur { background: #fff3e0; border: 1px solid #ffb74d; padding: 0 5px; font-size: 9px; font-family: 'Consolas', monospace; color: #e65100; margin-left: 4px; border-radius: 2px; font-weight: 700; }
+        .tag-origine { display: inline-block; padding: 1px 6px; font-size: 9px; font-weight: 700; border-radius: 2px; font-family: 'Consolas', monospace; letter-spacing: 0.5px; }
+        .tag-origine.EU { background: #e3f2fd; color: #0d47a1; border: 1px solid #64b5f6; }
+        .tag-origine.CN { background: #ffebee; color: #b71c1c; border: 1px solid #ef9a9a; }
+
+        .price-final { font-weight: 700; color: #1565c0; }
+        .price-orig { color: #78909c; }
+
+        .statusbar { background: linear-gradient(to bottom, #cfd8dc 0%, #b0bec5 100%); border-top: 1px solid #90a4ae; padding: 4px 10px; display: flex; gap: 16px; font-size: 11px; color: #263238; align-items: center; height: 24px; }
+        .statusbar .sb-item { display: flex; align-items: center; gap: 5px; padding: 0 8px; border-right: 1px solid #90a4ae; height: 100%; }
+        .statusbar .sb-item:last-child { border-right: none; margin-left: auto; }
+        .statusbar b { font-weight: 700; color: #0d47a1; }
+        .statusbar .total { background: #1565c0; color: #fff; padding: 2px 10px; border-radius: 2px; font-weight: 700; font-size: 12px; font-family: 'Consolas', monospace; }
+
+        .modal-ov { position: fixed; inset: 0; background: rgba(38, 50, 56, 0.55); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 16px; }
+        .modal { background: #eceff1; max-width: 1100px; width: 100%; max-height: 94vh; border: 1px solid #263238; box-shadow: 0 6px 30px rgba(0,0,0,0.35); display: flex; flex-direction: column; }
+        .modal.wide { max-width: 1300px; }
+        .modal-title { background: linear-gradient(to bottom, #1976d2 0%, #0d47a1 100%); color: #fff; padding: 7px 12px; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: space-between; text-transform: uppercase; letter-spacing: 0.3px; }
+        .modal-title.china-modal { background: linear-gradient(to bottom, #c62828 0%, #b71c1c 100%); }
+        .modal-title .close-btn { background: transparent; border: 1px solid rgba(255,255,255,0.3); color: #fff; width: 22px; height: 22px; font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; border-radius: 2px; }
+        .modal-title .close-btn:hover { background: #c62828; border-color: #c62828; }
+        .modal-body { padding: 10px 14px; overflow-y: auto; flex: 1; }
+        .modal-foot { background: #cfd8dc; border-top: 1px solid #90a4ae; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; }
+
+        .wizard-steps { display: flex; background: #fff; border-bottom: 1px solid #b0bec5; padding: 0; margin: -10px -14px 10px; }
+        .wiz-step { flex: 1; padding: 8px 12px; text-align: center; font-size: 11px; color: #78909c; border-right: 1px solid #eceff1; position: relative; font-weight: 600; }
+        .wiz-step.active { background: #e3f2fd; color: #0d47a1; }
+        .wiz-step.done { background: #e8f5e9; color: #2e7d32; }
+        .wiz-step .num { display: inline-block; width: 18px; height: 18px; border-radius: 50%; background: #cfd8dc; color: white; text-align: center; line-height: 18px; font-size: 10px; margin-right: 6px; font-weight: 700; }
+        .wiz-step.active .num { background: #1976d2; }
+        .wiz-step.done .num { background: #4caf50; }
+
+        .fieldset { border: 1px solid #b0bec5; background: #fff; margin-bottom: 10px; }
+        .fieldset-head { background: linear-gradient(to bottom, #eceff1 0%, #cfd8dc 100%); border-bottom: 1px solid #b0bec5; padding: 5px 10px; font-size: 11px; font-weight: 700; color: #263238; text-transform: uppercase; letter-spacing: 0.4px; display: flex; align-items: center; gap: 6px; }
+        .fieldset-head.china-fs { background: linear-gradient(to bottom, #ffebee 0%, #ffcdd2 100%); color: #b71c1c; }
+        .fieldset-body { padding: 10px; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+        .fieldset-body.cols-4 { grid-template-columns: repeat(4, 1fr); }
+        @media (max-width: 800px) { .fieldset-body.cols-4 { grid-template-columns: repeat(2, 1fr); } }
+
+        .notice { background: #fff8e1; border: 1px solid #ffca28; border-left: 4px solid #f9a825; padding: 7px 10px; font-size: 11px; color: #5d4037; margin-bottom: 10px; display: flex; gap: 8px; align-items: flex-start; }
+        .notice svg { color: #f9a825; flex-shrink: 0; margin-top: 1px; }
+
+        .calc-box { background: #e8eaf6; border: 1px solid #9fa8da; padding: 8px 10px; font-size: 11px; color: #283593; display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+        .calc-box .calc-result { background: #1a237e; color: #fff; padding: 3px 10px; font-family: 'Consolas', monospace; font-weight: 700; font-size: 13px; border-radius: 2px; }
+
+        .preview-box { border: 1px solid #b0bec5; background: #fff; max-height: 200px; overflow: auto; }
+        .preview-box table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        .preview-box th { background: #eceff1; padding: 4px 6px; border: 1px solid #b0bec5; font-size: 10px; color: #37474f; font-weight: 700; text-align: left; white-space: nowrap; position: sticky; top: 0; }
+        .preview-box th.mapped { background: #1565c0; color: #fff; border-color: #0d47a1; }
+        .preview-box th.mapped .role { display: block; font-size: 9px; color: #bbdefb; font-weight: 600; margin-top: 1px; }
+        .preview-box td { padding: 3px 6px; border: 1px solid #eceff1; font-size: 11px; color: #455a64; white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+
+        .qty-inp { width: 55px; text-align: center; background: #fffde7; border: 1px solid #90a4ae; padding: 3px; font-family: 'Consolas', monospace; font-size: 12px; font-weight: 700; border-radius: 2px; }
+        .qty-inp:focus { outline: none; border-color: #1976d2; background: #fff; }
+
+        .empty { padding: 60px 20px; text-align: center; color: #78909c; font-size: 12px; }
+        .empty .em-ttl { font-size: 14px; color: #37474f; font-weight: 600; margin-bottom: 4px; }
+
+        .sup-card { background: #fff; border: 1px solid #cfd8dc; margin: 8px; display: flex; flex-direction: column; }
+        .sup-card .sc-head { background: #eceff1; border-bottom: 1px solid #cfd8dc; padding: 4px 10px; font-size: 11px; font-weight: 700; color: #263238; text-transform: uppercase; display: flex; justify-content: space-between; }
+        .sup-card.china-card .sc-head { background: #ffebee; color: #b71c1c; }
+        .sup-card .sc-body { padding: 8px 10px; font-size: 12px; }
+        .sup-row-item { display: grid; grid-template-columns: 140px 1fr; padding: 3px 0; border-bottom: 1px dotted #cfd8dc; }
+        .sup-row-item .lbl { color: #546e7a; font-weight: 600; font-size: 11px; }
+        .sup-row-item .val { color: #263238; font-family: 'Consolas', monospace; }
+
+        /* Bolla doganale preview */
+        .bolla-preview { background: #fff; padding: 12px; }
+        .bolla-header { text-align: center; border: 2px solid #000; padding: 6px; margin-bottom: 10px; font-family: 'Courier New', monospace; font-weight: bold; font-size: 11px; }
+        .bolla-grid-big { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+        .bolla-tab { width: 100%; border-collapse: collapse; font-family: 'Courier New', monospace; margin-bottom: 10px; }
+        .bolla-tab th { background: #263238; color: #fff; padding: 5px 8px; font-size: 11px; text-align: left; }
+        .bolla-tab td { border: 1px solid #cfd8dc; padding: 4px 8px; font-size: 11px; }
+        .bolla-tab td.num { text-align: right; font-variant-numeric: tabular-nums; }
+        .bolla-tab .tot-row { background: #1a237e; color: #fff; font-weight: 700; }
+        .bolla-tab .tot-row td { color: #fff; }
+
+        .bolla-card { background: #fff; border: 1px solid #90a4ae; margin: 8px; padding: 0; }
+        .bolla-card-head { background: linear-gradient(to bottom, #c62828 0%, #b71c1c 100%); color: #fff; padding: 6px 10px; display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 11px; }
+        .bolla-card-body { padding: 10px; }
+        .bolla-stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 8px; }
+        @media (max-width: 700px) { .bolla-stat-grid { grid-template-columns: repeat(2, 1fr); } }
+        .bolla-stat { background: #f5f7fa; border: 1px solid #cfd8dc; padding: 6px 8px; }
+        .bolla-stat .lbl { font-size: 9px; color: #78909c; text-transform: uppercase; font-weight: 600; }
+        .bolla-stat .val { font-size: 14px; color: #0d47a1; font-weight: 700; font-family: 'Consolas', monospace; }
+        .bolla-stat.total { background: #0d47a1; border-color: #0d47a1; }
+        .bolla-stat.total .lbl { color: #bbdefb; }
+        .bolla-stat.total .val { color: #fff; font-size: 16px; }
+
+        .kpi-row-china { background: #ffebee; border: 1px solid #ef9a9a; padding: 10px; margin-bottom: 10px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+        @media (max-width: 800px) { .kpi-row-china { grid-template-columns: repeat(2, 1fr); } }
+        .kpi-box { background: #fff; border: 1px solid #ffcdd2; padding: 6px 10px; }
+        .kpi-box .lbl { font-size: 9px; color: #b71c1c; text-transform: uppercase; font-weight: 700; letter-spacing: 0.3px; }
+        .kpi-box .val { font-size: 16px; color: #263238; font-weight: 700; font-family: 'Consolas', monospace; margin-top: 2px; }
+        .kpi-box.accent .val { color: #b71c1c; }
+        .kpi-box.success .val { color: #2e7d32; }
+      `}</style>
+
+      {/* MENU BAR */}
+      <div className="menubar">
+        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v1.4</div>
+        <div className="menubar-item">Archivio</div>
+        <div className="menubar-item">Modifica</div>
+        <div className="menubar-item">Visualizza</div>
+        <div className="menubar-item">Strumenti</div>
+        <div className="menubar-item">?</div>
+        <div className="menubar-right">
+          <div className="menubar-right-item">UTENTE: operatore01</div>
+          <div className="menubar-right-item">{today} · {now}</div>
+          <div className="menubar-right-item status"><span className="dot"></span>CONNESSO</div>
+        </div>
+      </div>
+
+      {/* TOOLBAR */}
+      <div className="toolbar">
+        <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleFileSelect} style={{ display: 'none' }} />
+        <input ref={chinaFileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleChinaFileSelect} style={{ display: 'none' }} />
+
+        <button className="tbtn primary" onClick={() => fileInputRef.current?.click()} title="Importa listino Europa">
+          <Globe2 size={13} /> Import Europa
+        </button>
+        <button className="tbtn china" onClick={() => { cancelChinaImport(); setBollaMode('file'); setChinaStep('upload'); chinaFileInputRef.current?.click(); }} title="Importa listino Cina nel catalogo">
+          <Ship size={13} /> Import Cina
+        </button>
+        <button className="tbtn china" onClick={openBollaFromSelection} disabled={selectedItems.filter(i => i.origine === 'CN').length === 0} title="Genera bolla doganale DAU dagli articoli Cina selezionati">
+          <FileText size={13} /> Genera Bolla DAU {selectedItems.filter(i => i.origine === 'CN').length > 0 && <span style={{ background: '#fff', color: '#b71c1c', padding: '0 5px', borderRadius: 3, fontSize: 10, marginLeft: 2 }}>{selectedItems.filter(i => i.origine === 'CN').length}</span>}
+        </button>
+
+        <div className="tb-sep"></div>
+        <button className="tbtn" onClick={exportAll}><Download size={13} /> Esporta DB</button>
+        <button className="tbtn success" onClick={exportSelection} disabled={selectedItems.length === 0}>
+          <FileSpreadsheet size={13} /> Esporta Selezione
+        </button>
+        <div className="tb-sep"></div>
+        <button className="tbtn danger" onClick={clearSelected} disabled={selectedItems.length === 0}>
+          <Trash2 size={13} /> Svuota Sel.
+        </button>
+        <div className="tb-sep"></div>
+        <span className="tb-label">Cambio USD/EUR:</span>
+        <input className="tb-input" type="number" step="0.001" value={exchangeRate} onChange={e => setExchangeRate(parseFloat(e.target.value) || 0)} />
+      </div>
+
+      <div className="workspace">
+        {/* SIDEBAR */}
+        <div className="sidenav">
+          <div className="sidenav-header">Moduli</div>
+          <div className={`sidenav-item ${activeSection === 'catalogo' ? 'active' : ''}`} onClick={() => setActiveSection('catalogo')}>
+            <List size={14} /> Catalogo Articoli <span className="badge">{fmtInt(allItems.length)}</span>
+          </div>
+          <div className={`sidenav-item ${activeSection === 'selezione' ? 'active' : ''}`} onClick={() => setActiveSection('selezione')}>
+            <ShoppingCart size={14} /> Selezione <span className="badge">{selectedItems.length}</span>
+          </div>
+          <div className={`sidenav-item ${activeSection === 'fornitori' ? 'active' : ''}`} onClick={() => setActiveSection('fornitori')}>
+            <FolderOpen size={14} /> Fornitori <span className="badge">{suppliers.length}</span>
+          </div>
+          <div className={`sidenav-item ${activeSection === 'confronto' ? 'active' : ''}`} onClick={() => setActiveSection('confronto')}>
+            <Search size={14} /> Confronto Prezzi <span className="badge">{comparisonData.length}</span>
+          </div>
+          <div className={`sidenav-item ${activeSection === 'bolle' ? 'active' : ''}`} onClick={() => setActiveSection('bolle')}>
+            <FileText size={14} /> Bolle Doganali <span className="badge">{bolle.length}</span>
+          </div>
+
+          <div className="sidenav-header" style={{ marginTop: 8 }}>Riepilogo</div>
+          <div className="sidenav-stats">
+            <div className="sidenav-stat"><span>Referenze sel.</span><b>{selectedItems.length}</b></div>
+            <div className="sidenav-stat"><span>Pezzi totali</span><b>{qtyTotale}</b></div>
+            <div className="sidenav-stat"><span>Valore</span><b>€ {fmtEur(totaleSelezione)}</b></div>
+          </div>
+          <div className="sidenav-stats">
+            <div className="sidenav-stat"><span>Fornitori EU</span><b>{suppliers.filter(s => s.origine !== 'CN').length}</b></div>
+            <div className="sidenav-stat"><span>Fornitori CN</span><b>{suppliers.filter(s => s.origine === 'CN').length}</b></div>
+            <div className="sidenav-stat"><span>Marche</span><b>{uniqueMarche.length}</b></div>
+          </div>
+        </div>
+
+        <div className="content">
+          {/* ===== CATALOGO ===== */}
+          {activeSection === 'catalogo' && (
+            <div className="window">
+              <div className="window-title">
+                <span>Catalogo Articoli</span>
+                <span className="breadcrumb">Home › Catalogo</span>
+              </div>
+              {allItems.length === 0 ? (
+                <div className="empty">
+                  <div className="em-ttl">Catalogo vuoto</div>
+                  Usare "Import Europa" o "Import Cina (DAU)" per caricare i listini.
+                </div>
+              ) : (
+                <>
+                  <div className="filters">
+                    <div className="fld">
+                      <label>Ricerca</label>
+                      <input className="ctl" placeholder="Marca, modello, misura..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+                    </div>
+                    <div className="fld">
+                      <label>Origine</label>
+                      <select className="ctl" value={filterOrigine} onChange={e => setFilterOrigine(e.target.value)}>
+                        <option value="">-- TUTTE --</option>
+                        <option value="EU">Europa</option>
+                        <option value="CN">Cina</option>
+                      </select>
+                    </div>
+                    <div className="fld">
+                      <label>Marca</label>
+                      <select className="ctl" value={filterMarca} onChange={e => setFilterMarca(e.target.value)}>
+                        <option value="">-- TUTTE --</option>
+                        {uniqueMarche.map(m => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    </div>
+                    <div className="fld">
+                      <label>Fornitore</label>
+                      <select className="ctl" value={filterSupplier} onChange={e => setFilterSupplier(e.target.value)}>
+                        <option value="">-- TUTTI --</option>
+                        {suppliers.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      </select>
+                    </div>
+                    <div className="fld">
+                      <label>&nbsp;</label>
+                      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                        <button className="tbtn" onClick={() => { setSearchQuery(''); setFilterMarca(''); setFilterSupplier(''); setFilterOrigine(''); }}>
+                          <X size={12} /> Azzera
+                        </button>
+                        <button className={`tbtn ${compactView ? 'primary' : ''}`} onClick={() => setCompactView(!compactView)} title="Alterna vista compatta/normale">
+                          {compactView ? '≡ Normale' : '≡ Compatta'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid-wrap">
+                    <table className={`grid ${compactView ? 'compact' : ''}`}>
+                      <thead>
+                        <tr>
+                          <th style={{ width: 26, textAlign: 'center', cursor: 'default' }}>Sel</th>
+                          <th style={{ width: 50 }}>Orig.</th>
+                          <th onClick={() => toggleSort('marca')}>Marca {sortBy.field === 'marca' && <span className="si">{sortBy.dir === 'asc' ? '▲' : '▼'}</span>}</th>
+                          <th onClick={() => toggleSort('modello')}>Modello</th>
+                          <th onClick={() => toggleSort('misura')}>Misura</th>
+                          <th>Fornitore</th>
+                          <th className="num" onClick={() => toggleSort('prezzoOriginale')}>Orig.</th>
+                          <th className="num">PFU</th>
+                          <th className="num">Tras./U</th>
+                          <th className="num">Dazio</th>
+                          <th className="num">IVA</th>
+                          <th className="num" onClick={() => toggleSort('prezzoFinale')}>P. Finale</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredItems.slice(0, compactView ? 1500 : 500).map(item => {
+                          const isSelected = selectedItems.some(i => i.id === item.id);
+                          return (
+                            <tr key={item.id} className={isSelected ? 'selected' : ''} onClick={() => toggleSelect(item)}>
+                              <td style={{ textAlign: 'center' }}>
+                                <span className={`chk ${isSelected ? 'on' : ''}`}>{isSelected ? '✓' : ''}</span>
+                              </td>
+                              <td><span className={`tag-origine ${item.origine}`}>{item.origine}</span></td>
+                              <td style={{ fontWeight: 600 }}>{item.marca}</td>
+                              <td>{item.modello || '—'}</td>
+                              <td><span className="tag-mis">{item.misura || '—'}</span></td>
+                              <td><span className="tag-sup">{item.supplierName}</span></td>
+                              <td className="num price-orig">
+                                {fmtEur(item.prezzoOriginale)}
+                                {item.currency !== 'EUR' && <span className="tag-cur">{item.currency}</span>}
+                              </td>
+                              <td className="num">{fmtEur(item.pfu)}</td>
+                              <td className="num">{fmtEur(item.trasportoPerUnit)}</td>
+                              <td className="num">{item.dazio ? fmtEur(item.dazio) : '—'}</td>
+                              <td className="num">{item.iva ? fmtEur(item.iva) : '—'}</td>
+                              <td className="num price-final">
+                                € {fmtEur(item.prezzoFinale)}
+                                {item.origine === 'CN' && !item.lastBollaId && (
+                                  <span title="Prezzo stimato, non ancora confermato da una bolla reale" style={{ fontSize: 8, marginLeft: 4, background: '#fff3e0', color: '#e65100', padding: '1px 4px', border: '1px solid #ffb74d', borderRadius: 2, fontWeight: 700 }}>STIMA</span>
+                                )}
+                                {item.lastBollaId && (
+                                  <span title="Prezzo aggiornato con bolla reale" style={{ fontSize: 8, marginLeft: 4, background: '#e8f5e9', color: '#1b5e20', padding: '1px 4px', border: '1px solid #66bb6a', borderRadius: 2, fontWeight: 700 }}>REALE</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {filteredItems.length > (compactView ? 1500 : 500) && (
+                      <div style={{ padding: 8, textAlign: 'center', fontSize: 11, color: '#78909c', background: '#f5f7fa', borderTop: '1px solid #cfd8dc' }}>
+                        Visualizzati primi {compactView ? 1500 : 500} di {fmtInt(filteredItems.length)} — {compactView ? 'affinare filtri' : 'passa a vista compatta per più righe'}
+                      </div>
+                    )}
+                    {filteredItems.length === 0 && <div className="empty"><div className="em-ttl">Nessun record</div>Modificare i filtri.</div>}
+                  </div>
+
+                  <div className="statusbar">
+                    <div className="sb-item">Record: <b>{filteredItems.length}</b> / {fmtInt(allItems.length)}</div>
+                    <div className="sb-item">Selezionati: <b>{selectedItems.length}</b></div>
+                    <div className="sb-item">Valore selezione: <span className="total">€ {fmtEur(totaleSelezione)}</span></div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ===== SELEZIONE ===== */}
+          {activeSection === 'selezione' && (
+            <div className="window">
+              <div className="window-title"><span>Selezione Corrente</span><span className="breadcrumb">Home › Selezione</span></div>
+              {selectedItems.length === 0 ? (
+                <div className="empty"><div className="em-ttl">Nessun articolo selezionato</div>Accedere al Catalogo e cliccare sulle righe.</div>
+              ) : (
+                <>
+                  <div className="grid-wrap">
+                    <table className="grid">
+                      <thead>
+                        <tr>
+                          <th>Orig.</th><th>Marca</th><th>Modello</th><th>Misura</th><th>Fornitore</th>
+                          <th className="num">P.Unit.</th><th className="num" style={{ width: 70 }}>Q.tà</th>
+                          <th className="num">Totale</th><th style={{ width: 32 }}></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedItems.map(item => (
+                          <tr key={item.id}>
+                            <td><span className={`tag-origine ${item.origine}`}>{item.origine}</span></td>
+                            <td style={{ fontWeight: 600 }}>{item.marca}</td>
+                            <td>{item.modello || '—'}</td>
+                            <td><span className="tag-mis">{item.misura || '—'}</span></td>
+                            <td><span className="tag-sup">{item.supplierName}</span></td>
+                            <td className="num price-final">€ {fmtEur(item.prezzoFinale)}</td>
+                            <td className="num">
+                              <input type="number" min="1" className="qty-inp" value={item.qtyRichiesta} onChange={e => updateSelectedQty(item.id, e.target.value)} />
+                            </td>
+                            <td className="num price-final">€ {fmtEur(item.prezzoFinale * item.qtyRichiesta)}</td>
+                            <td style={{ textAlign: 'center' }}>
+                              <button className="tbtn danger" style={{ padding: '2px 6px', height: 22 }} onClick={() => removeSelected(item.id)}><X size={11} /></button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {selectedItems.filter(i => i.origine === 'CN').length > 0 && (
+                    <div style={{ background: '#ffebee', border: '1px solid #ef9a9a', padding: 10, margin: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                      <div style={{ fontSize: 12, color: '#b71c1c' }}>
+                        <b>📄 {selectedItems.filter(i => i.origine === 'CN').length} articoli Cina selezionati</b> — {selectedItems.filter(i => i.origine === 'CN').reduce((s, i) => s + i.qtyRichiesta, 0)} pezzi totali. Pronto per generare la bolla doganale DAU con i calcoli reali (nolo, dogana, IVA).
+                      </div>
+                      <button className="tbtn china" onClick={openBollaFromSelection} style={{ fontWeight: 700 }}>
+                        <FileText size={13} /> Genera Bolla Doganale ▸
+                      </button>
+                    </div>
+                  )}
+                  <div className="statusbar">
+                    <div className="sb-item">Referenze: <b>{selectedItems.length}</b></div>
+                    <div className="sb-item">Pezzi tot: <b>{qtyTotale}</b></div>
+                    <div className="sb-item">Prezzo medio: <b>€ {fmtEur(qtyTotale > 0 ? totaleSelezione / qtyTotale : 0)}</b></div>
+                    <div className="sb-item">TOTALE: <span className="total">€ {fmtEur(totaleSelezione)}</span></div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ===== FORNITORI ===== */}
+          {activeSection === 'fornitori' && (
+            <div className="window">
+              <div className="window-title"><span>Anagrafica Fornitori</span><span className="breadcrumb">Home › Fornitori</span></div>
+              {suppliers.length === 0 ? (
+                <div className="empty"><div className="em-ttl">Nessun fornitore</div>Si popola automaticamente ad ogni importazione.</div>
+              ) : (
+                <div style={{ overflowY: 'auto', flex: 1 }}>
+                  {suppliers.map(s => (
+                    <div key={s.id} className={`sup-card ${s.origine === 'CN' ? 'china-card' : ''}`}>
+                      <div className="sc-head">
+                        <span>▸ {s.name} <span className={`tag-origine ${s.origine || 'EU'}`} style={{ marginLeft: 8 }}>{s.origine || 'EU'}</span></span>
+                        <button className="tbtn danger" style={{ padding: '2px 8px', height: 20, fontSize: 10 }} onClick={() => deleteSupplier(s.id)}>
+                          <Trash2 size={10} /> Elimina
+                        </button>
+                      </div>
+                      <div className="sc-body">
+                        <div className="sup-row-item"><span className="lbl">Codice fornitore</span><span className="val">{s.id}</span></div>
+                        <div className="sup-row-item"><span className="lbl">Data importazione</span><span className="val">{new Date(s.importDate).toLocaleString('it-IT')}</span></div>
+                        <div className="sup-row-item"><span className="lbl">Articoli caricati</span><span className="val">{fmtInt(s.itemCount)}</span></div>
+                        <div className="sup-row-item"><span className="lbl">Valuta</span><span className="val">{s.currency}</span></div>
+                        {s.origine !== 'CN' && (<>
+                          <div className="sup-row-item"><span className="lbl">PFU applicato</span><span className="val">€ {fmtEur(s.pfu)} / pz</span></div>
+                          <div className="sup-row-item"><span className="lbl">Trasporto totale</span><span className="val">€ {fmtEur(s.trasporto)}</span></div>
+                          <div className="sup-row-item"><span className="lbl">Q.tà di carico</span><span className="val">{s.qty} pz</span></div>
+                        </>)}
+                        {s.origine === 'CN' && s.bollaId && (
+                          <div className="sup-row-item"><span className="lbl">Bolla doganale</span><span className="val">{s.bollaId}</span></div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ===== CONFRONTO PREZZI ===== */}
+          {activeSection === 'confronto' && (
+            <div className="window">
+              <div className="window-title">
+                <span>Confronto Prezzi Fornitori per Misura</span>
+                <span className="breadcrumb">Home › Confronto</span>
+              </div>
+              {allItems.length === 0 ? (
+                <div className="empty"><div className="em-ttl">Catalogo vuoto</div>Importare almeno un listino per usare il confronto.</div>
+              ) : (
+                <>
+                  <div className="filters">
+                    <div className="fld" style={{ gridColumn: 'span 2' }}>
+                      <label>Cerca misura o marca</label>
+                      <input className="ctl" placeholder="Es. 205/55R16 oppure Michelin" value={compareMisuraQuery} onChange={e => setCompareMisuraQuery(e.target.value)} />
+                    </div>
+                    <div className="fld">
+                      <label>&nbsp;</label>
+                      <button className="tbtn" onClick={() => setCompareMisuraQuery('')}><X size={12} /> Azzera</button>
+                    </div>
+                    <div className="fld" style={{ gridColumn: 'span 2' }}>
+                      <label>&nbsp;</label>
+                      <div style={{ fontSize: 11, color: '#546e7a' }}>
+                        <b>{comparisonData.length}</b> misure trovate · 
+                        <b style={{ color: '#2e7d32', marginLeft: 4 }}>{comparisonData.filter(g => g.suppliersCount >= 2).length}</b> con 2+ fornitori
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
+                    {comparisonData.length === 0 && (
+                      <div className="empty"><div className="em-ttl">Nessuna misura</div>Modificare la ricerca.</div>
+                    )}
+                    {comparisonData.slice(0, 100).map(group => (
+                      <div key={group.misura} style={{ background: '#fff', border: '1px solid #cfd8dc', marginBottom: 8 }}>
+                        <div style={{ background: 'linear-gradient(to bottom,#eceff1,#cfd8dc)', padding: '6px 10px', borderBottom: '1px solid #90a4ae', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 700, fontSize: 13, fontFamily: 'Consolas,monospace', color: '#0d47a1' }}>{group.misura}</span>
+                          <span className="tag-mis" style={{ background: '#fff' }}>{group.suppliersCount} fornitor{group.suppliersCount === 1 ? 'e' : 'i'}</span>
+                          <span className="tag-mis" style={{ background: '#fff' }}>{group.items.length} referenz{group.items.length === 1 ? 'a' : 'e'}</span>
+                          {group.hasEU && <span className="tag-origine EU">EU</span>}
+                          {group.hasCN && <span className="tag-origine CN">CN</span>}
+                          <span style={{ marginLeft: 'auto', fontSize: 11, color: '#546e7a' }}>
+                            Min <b style={{ color: '#2e7d32' }}>€ {fmtEur(group.min)}</b> · Max <b style={{ color: '#c62828' }}>€ {fmtEur(group.max)}</b>
+                            {group.savings > 0 && <span style={{ marginLeft: 8, background: '#e8f5e9', color: '#1b5e20', padding: '1px 6px', borderRadius: 2, fontWeight: 700, fontSize: 10 }}>Risparmio fino a {group.savings.toFixed(1)}%</span>}
+                          </span>
+                        </div>
+                        <table className="grid compact" style={{ margin: 0 }}>
+                          <thead>
+                            <tr>
+                              <th style={{ width: 40 }}>#</th>
+                              <th style={{ width: 50 }}>Orig.</th>
+                              <th>Marca</th>
+                              <th>Modello</th>
+                              <th>Fornitore</th>
+                              <th className="num">Prezzo Orig.</th>
+                              <th className="num">PFU</th>
+                              <th className="num">Dazio</th>
+                              <th className="num">IVA</th>
+                              <th className="num">Prezzo Finale</th>
+                              <th className="num">Δ vs min</th>
+                              <th style={{ width: 40 }}>Sel</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {group.items.map((item, idx) => {
+                              const isSelected = selectedItems.some(i => i.id === item.id);
+                              const deltaPct = group.min > 0 ? ((item.prezzoFinale - group.min) / group.min * 100) : 0;
+                              return (
+                                <tr key={item.id} className={isSelected ? 'selected' : ''} style={{ cursor: 'pointer' }} onClick={() => toggleSelect(item)}>
+                                  <td style={{ fontWeight: 700, color: idx === 0 ? '#2e7d32' : '#546e7a' }}>
+                                    {idx === 0 ? '🏆' : `#${idx + 1}`}
+                                  </td>
+                                  <td><span className={`tag-origine ${item.origine}`}>{item.origine}</span></td>
+                                  <td style={{ fontWeight: 600 }}>{item.marca}</td>
+                                  <td>{item.modello || '—'}</td>
+                                  <td><span className="tag-sup">{item.supplierName}</span></td>
+                                  <td className="num price-orig">
+                                    {fmtEur(item.prezzoOriginale)}
+                                    {item.currency !== 'EUR' && <span className="tag-cur">{item.currency}</span>}
+                                  </td>
+                                  <td className="num">{fmtEur(item.pfu)}</td>
+                                  <td className="num">{item.dazio ? fmtEur(item.dazio) : '—'}</td>
+                                  <td className="num">{item.iva ? fmtEur(item.iva) : '—'}</td>
+                                  <td className="num price-final" style={{ color: idx === 0 ? '#1b5e20' : '#1565c0' }}>€ {fmtEur(item.prezzoFinale)}</td>
+                                  <td className="num" style={{ color: deltaPct > 0 ? '#c62828' : '#2e7d32', fontWeight: 600 }}>
+                                    {deltaPct > 0 ? `+${deltaPct.toFixed(1)}%` : '—'}
+                                  </td>
+                                  <td style={{ textAlign: 'center' }}>
+                                    <span className={`chk ${isSelected ? 'on' : ''}`}>{isSelected ? '✓' : ''}</span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ))}
+                    {comparisonData.length > 100 && (
+                      <div style={{ padding: 8, textAlign: 'center', fontSize: 11, color: '#78909c' }}>
+                        Visualizzate prime 100 misure di {comparisonData.length} — affinare la ricerca
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="statusbar">
+                    <div className="sb-item">Misure: <b>{comparisonData.length}</b></div>
+                    <div className="sb-item">Con più fornitori: <b>{comparisonData.filter(g => g.suppliersCount >= 2).length}</b></div>
+                    <div className="sb-item">Referenze totali: <b>{comparisonData.reduce((s, g) => s + g.items.length, 0)}</b></div>
+                    <div className="sb-item">Selezionati: <b>{selectedItems.length}</b></div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ===== BOLLE DOGANALI ===== */}
+          {activeSection === 'bolle' && (
+            <div className="window">
+              <div className="window-title china-title">
+                <span>Bolle Doganali — Archivio</span>
+                <span className="breadcrumb">Home › Bolle</span>
+              </div>
+              {bolle.length === 0 ? (
+                <div className="empty">
+                  <div className="em-ttl">Nessuna bolla doganale</div>
+                  Usare "Import Cina (DAU)" dalla toolbar per creare la prima bolla.
+                </div>
+              ) : (
+                <div style={{ overflowY: 'auto', flex: 1 }}>
+                  {bolle.map(b => {
+                    const supplier = suppliers.find(s => s.id === b.supplierId);
+                    return (
+                      <div key={b.id} className="bolla-card">
+                        <div className="bolla-card-head">
+                          <span>▸ BOLLA {b.id.toUpperCase()} — {b.params.fornitore}</span>
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <button className="tbtn success" style={{ padding: '2px 8px', height: 22, fontSize: 10 }} onClick={() => generaPdfBolla(b, 'ufficiale')}>
+                              <Printer size={11} /> PDF DAU Ufficiale
+                            </button>
+                            <button className="tbtn" style={{ padding: '2px 8px', height: 22, fontSize: 10 }} onClick={() => generaPdfBolla(b, 'semplificato')}>
+                              <FileText size={11} /> PDF Riepilogo
+                            </button>
+                            <button className="tbtn" style={{ padding: '2px 8px', height: 22, fontSize: 10, background: 'linear-gradient(to bottom,#66bb6a,#388e3c)', color: '#fff', borderColor: '#2e7d32', fontWeight: 600 }} onClick={() => exportBollaExcel(b)}>
+                              <FileSpreadsheet size={11} /> Excel Dettaglio
+                            </button>
+                            <button className="tbtn danger" style={{ padding: '2px 8px', height: 22, fontSize: 10 }} onClick={() => deleteBolla(b.id)}>
+                              <Trash2 size={10} />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="bolla-card-body">
+                          <div className="bolla-stat-grid">
+                            <div className="bolla-stat"><div className="lbl">Fattura USD</div><div className="val">$ {fmtEur(b.calcolo.fobTotUsd)}</div></div>
+                            <div className="bolla-stat"><div className="lbl">Valore Statistico</div><div className="val">€ {fmtEur(b.calcolo.valoreStatistico)}</div></div>
+                            <div className="bolla-stat"><div className="lbl">Quantità</div><div className="val">{b.calcolo.qtyTot} pz</div></div>
+                            <div className="bolla-stat total"><div className="lbl">Imposizioni</div><div className="val">€ {fmtEur(b.calcolo.totaleImposizioni)}</div></div>
+                          </div>
+                          <div style={{ fontSize: 11, color: '#546e7a', marginTop: 6 }}>
+                            <b>Data import:</b> {new Date(b.data).toLocaleString('it-IT')} · 
+                            <b> Articoli:</b> {b.items.length} · 
+                            <b> Tasso:</b> {b.params.tassoEurUsd} · 
+                            <b> Dazio:</b> {b.params.dazioPct}% · 
+                            <b> IVA:</b> {b.params.ivaPct}%
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ===== MODALE IMPORT EUROPA ===== */}
+      {importStep === 'preview' && (
+        <div className="modal-ov" onClick={cancelImport}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <div className="modal-title">
+              <span>▸ Nuova Importazione Europa — {fileName}</span>
+              <button className="close-btn" onClick={cancelImport}>✕</button>
+            </div>
+            <div className="modal-body">
+              <div className="notice">
+                <AlertCircle size={14} />
+                <div>Mappare le colonne del file Excel. Impostare PFU e trasporto che saranno ripartiti su ogni articolo.</div>
+              </div>
+
+              <div className="fieldset">
+                <div className="fieldset-head"><Package size={12} /> Dati Fornitore</div>
+                <div className="fieldset-body">
+                  <div className="fld">
+                    <label>Ragione sociale<span className="req">*</span></label>
+                    <input className="ctl" value={supplierName} onChange={e => setSupplierName(e.target.value)} />
+                  </div>
+                  <div className="fld">
+                    <label>Valuta</label>
+                    <select className="ctl" value={mapping.currency} onChange={e => setMapping({ ...mapping, currency: e.target.value })}>
+                      <option value="EUR">EUR — Euro</option>
+                      <option value="USD">USD — Dollaro</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="fieldset">
+                <div className="fieldset-head"><Settings size={12} /> Mappatura Colonne</div>
+                <div className="fieldset-body">
+                  <div className="fld"><label>Marca<span className="req">*</span></label>
+                    <select className="ctl" value={mapping.marca} onChange={e => setMapping({ ...mapping, marca: e.target.value })}>
+                      <option value="">-- Seleziona --</option>
+                      {headers.map((h, i) => <option key={i} value={h}>{h}</option>)}
+                    </select>
+                  </div>
+                  <div className="fld"><label>Modello</label>
+                    <select className="ctl" value={mapping.modello} onChange={e => setMapping({ ...mapping, modello: e.target.value })}>
+                      <option value="">-- Nessuna --</option>
+                      {headers.map((h, i) => <option key={i} value={h}>{h}</option>)}
+                    </select>
+                  </div>
+                  <div className="fld"><label>Misura</label>
+                    <select className="ctl" value={mapping.misura} onChange={e => setMapping({ ...mapping, misura: e.target.value })}>
+                      <option value="">-- Nessuna --</option>
+                      {headers.map((h, i) => <option key={i} value={h}>{h}</option>)}
+                    </select>
+                  </div>
+                  <div className="fld"><label>Prezzo<span className="req">*</span></label>
+                    <select className="ctl" value={mapping.prezzo} onChange={e => setMapping({ ...mapping, prezzo: e.target.value })}>
+                      <option value="">-- Seleziona --</option>
+                      {headers.map((h, i) => <option key={i} value={h}>{h}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="fieldset">
+                <div className="fieldset-head"><Truck size={12} /> Costi Aggiuntivi</div>
+                <div className="fieldset-body">
+                  <div className="fld"><label>PFU per pz (€)</label>
+                    <input className="ctl" type="number" step="0.01" value={pfuValue} onChange={e => setPfuValue(e.target.value)} placeholder="0,00" />
+                  </div>
+                  <div className="fld"><label>Trasporto totale (€)</label>
+                    <input className="ctl" type="number" step="0.01" value={trasportoValue} onChange={e => setTrasportoValue(e.target.value)} placeholder="0,00" />
+                  </div>
+                  <div className="fld"><label>Q.tà totale</label>
+                    <input className="ctl" type="number" value={qtyValue} onChange={e => setQtyValue(e.target.value)} placeholder="0" />
+                  </div>
+                  <div className="fld"><label>Trasp./unità (calc.)</label>
+                    <input className="ctl" readOnly value={(() => { const t = parseFloat(trasportoValue) || 0, q = parseFloat(qtyValue) || 0; return q > 0 ? (t / q).toFixed(2) + ' €' : '—'; })()} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="fieldset" style={{ marginTop: 10 }}>
+                <div className="fieldset-head"><Search size={12} /> Anteprima Dati</div>
+                <div style={{ padding: 6 }}>
+                  <div className="preview-box">
+                    <table>
+                      <thead>
+                        <tr>
+                          {headers.map((h, i) => {
+                            const role = mapping.marca === h ? 'MARCA' : mapping.modello === h ? 'MODELLO' : mapping.misura === h ? 'MISURA' : mapping.prezzo === h ? 'PREZZO' : null;
+                            return (<th key={i} className={role ? 'mapped' : ''}>{h}{role && <span className="role">→ {role}</span>}</th>);
+                          })}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {previewRows.map((row, ri) => (<tr key={ri}>{headers.map((_, ci) => <td key={ci}>{String(row[ci] ?? '')}</td>)}</tr>))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="modal-foot">
+              <span style={{ fontSize: 11, color: '#455a64' }}>Righe nel file: <b>{rawData.length - 1}</b></span>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="tbtn" onClick={cancelImport}>Annulla</button>
+                <button className="tbtn success" onClick={confirmImport}><Check size={12} /> Conferma e Importa</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== MODALE IMPORT CINA ===== */}
+      {chinaStep !== 'upload' && chinaStep !== 'idle' && (
+        <div className="modal-ov" onClick={cancelChinaImport}>
+          <div className="modal wide" onClick={e => e.stopPropagation()}>
+            <div className="modal-title china-modal">
+              <span>▸ {bollaMode === 'selection' ? 'GENERA BOLLA DAU — DA SELEZIONE CATALOGO' : 'IMPORT LISTINO CINA → CATALOGO'} {chinaFileName && `— ${chinaFileName}`}</span>
+              <button className="close-btn" onClick={cancelChinaImport}>✕</button>
+            </div>
+            <div className="modal-body">
+              {bollaMode === 'file' ? (
+                <div className="wizard-steps">
+                  <div className={`wiz-step ${chinaStep === 'mapping' ? 'active' : 'done'}`}>
+                    <span className="num">1</span>Mappatura Colonne + Import Catalogo
+                  </div>
+                </div>
+              ) : (
+                <div className="wizard-steps">
+                  <div className={`wiz-step ${chinaStep === 'parameters' ? 'active' : (chinaStep === 'preview' ? 'done' : '')}`}>
+                    <span className="num">1</span>Parametri Bolla + Costi Reali
+                  </div>
+                  <div className={`wiz-step ${chinaStep === 'preview' ? 'active' : ''}`}>
+                    <span className="num">2</span>Anteprima DAU + PDF
+                  </div>
+                </div>
+              )}
+
+              {/* STEP 1 - Mappatura */}
+              {chinaStep === 'mapping' && (
+                <>
+                  <div className="notice">
+                    <AlertCircle size={14} />
+                    <div><b>Import Listino Cina:</b> gli articoli vengono caricati nel Catalogo con un <b>prezzo EUR stimato</b> (FOB × cambio + dazio + IVA + PFU). Dal Catalogo selezionerai quali ordinare e quante quantità, poi userai <b>"Genera Bolla da Selezione"</b> per la bolla doganale reale.</div>
+                  </div>
+
+                  <div className="fieldset">
+                    <div className="fieldset-head china-fs"><Package size={12} /> Dati Fornitore + Parametri Stima</div>
+                    <div className="fieldset-body cols-4">
+                      <div className="fld"><label>Fornitore<span className="req">*</span></label>
+                        <input className="ctl" value={chinaParams.fornitore} onChange={e => setP('fornitore', e.target.value)} placeholder="Es. ARIVO TYRE GROUP" />
+                      </div>
+                      <div className="fld"><label>Cambio EUR/USD</label>
+                        <input className="ctl" type="number" step="0.0001" value={chinaParams.tassoEurUsd} onChange={e => setP('tassoEurUsd', parseFloat(e.target.value) || 1)} />
+                      </div>
+                      <div className="fld"><label>Dazio stima %</label>
+                        <input className="ctl" type="number" step="0.01" value={chinaParams.dazioPct} onChange={e => setP('dazioPct', parseFloat(e.target.value) || 0)} />
+                      </div>
+                      <div className="fld"><label>IVA stima %</label>
+                        <input className="ctl" type="number" step="0.01" value={chinaParams.ivaPct} onChange={e => setP('ivaPct', parseFloat(e.target.value) || 0)} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="fieldset">
+                    <div className="fieldset-head china-fs"><Settings size={12} /> Mappatura Colonne File Articoli</div>
+                    <div className="fieldset-body cols-4">
+                      <div className="fld"><label>Marca / Brand</label>
+                        <select className="ctl" value={chinaMapping.marca} onChange={e => setChinaMapping({ ...chinaMapping, marca: e.target.value })}>
+                          <option value="">-- Usa nome fornitore --</option>
+                          {chinaHeaders.map((h, i) => <option key={i} value={h}>{h}</option>)}
+                        </select>
+                      </div>
+                      <div className="fld"><label>Modello</label>
+                        <select className="ctl" value={chinaMapping.modello} onChange={e => setChinaMapping({ ...chinaMapping, modello: e.target.value })}>
+                          <option value="">-- Nessuna --</option>
+                          {chinaHeaders.map((h, i) => <option key={i} value={h}>{h}</option>)}
+                        </select>
+                      </div>
+                      <div className="fld"><label>Misura</label>
+                        <select className="ctl" value={chinaMapping.misura} onChange={e => setChinaMapping({ ...chinaMapping, misura: e.target.value })}>
+                          <option value="">-- Nessuna --</option>
+                          {chinaHeaders.map((h, i) => <option key={i} value={h}>{h}</option>)}
+                        </select>
+                      </div>
+                      <div className="fld"><label>Q.tà disp.</label>
+                        <select className="ctl" value={chinaMapping.qty} onChange={e => setChinaMapping({ ...chinaMapping, qty: e.target.value })}>
+                          <option value="">-- Nessuna (usa 1) --</option>
+                          {chinaHeaders.map((h, i) => <option key={i} value={h}>{h}</option>)}
+                        </select>
+                      </div>
+                      <div className="fld"><label>Prezzo USD<span className="req">*</span></label>
+                        <select className="ctl" value={chinaMapping.prezzo} onChange={e => setChinaMapping({ ...chinaMapping, prezzo: e.target.value })}>
+                          <option value="">-- Seleziona --</option>
+                          {chinaHeaders.map((h, i) => <option key={i} value={h}>{h}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="fieldset">
+                    <div className="fieldset-head"><Search size={12} /> Anteprima Dati File</div>
+                    <div style={{ padding: 6 }}>
+                      <div className="preview-box">
+                        <table>
+                          <thead>
+                            <tr>
+                              {chinaHeaders.map((h, i) => {
+                                const role = chinaMapping.marca === h ? 'MARCA' : chinaMapping.modello === h ? 'MODELLO' : chinaMapping.misura === h ? 'MISURA' : chinaMapping.prezzo === h ? 'PREZZO USD' : chinaMapping.qty === h ? 'QTY' : null;
+                                return (<th key={i} className={role ? 'mapped' : ''}>{h}{role && <span className="role">→ {role}</span>}</th>);
+                              })}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {chinaPreviewRows.map((row, ri) => (<tr key={ri}>{chinaHeaders.map((_, ci) => <td key={ci}>{String(row[ci] ?? '')}</td>)}</tr>))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* STEP 2 - Parametri Bolla */}
+              {chinaStep === 'parameters' && (
+                <>
+                  <div className="notice" style={{ background: '#e3f2fd', borderColor: '#1976d2', color: '#0d47a1' }}>
+                    <AlertCircle size={14} style={{ color: '#1976d2' }} />
+                    <div><b>Bolla Doganale DAU</b> — Compila i parametri reali di questa spedizione. Usa i preset Savino Del Bene qui sotto per caricare automaticamente nolo + costi sbarco + trasporto interno.</div>
+                  </div>
+
+                  <div className="fieldset" style={{ borderColor: '#1976d2' }}>
+                    <div className="fieldset-head" style={{ background: 'linear-gradient(to bottom,#e3f2fd,#bbdefb)', color: '#0d47a1' }}>
+                      <Truck size={12} /> Preset Nolo Savino Del Bene (val. 01/05 → 14/05)
+                    </div>
+                    <div style={{ padding: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: '#37474f' }}>Rotta / Container:</label>
+                      <select className="ctl" style={{ width: 240 }} value={noloPreset} onChange={e => applicaNoloPreset(e.target.value)}>
+                        {Object.entries(NOLO_PRESETS).map(([k, v]) => (
+                          <option key={k} value={k}>{v.label} — USD {v.noloMare}</option>
+                        ))}
+                      </select>
+                      <button className="tbtn primary" onClick={() => applicaNoloPreset(noloPreset)} style={{ fontSize: 11 }}>
+                        <Download size={11} /> Ricarica Preset Nolo
+                      </button>
+                      <button className="tbtn success" onClick={applicaCostiSdb} style={{ fontSize: 11 }}>
+                        <Check size={11} /> Applica Costi SDB (THC, Dogana, Trasporto)
+                      </button>
+                      <span style={{ fontSize: 10, color: '#78909c', marginLeft: 'auto' }}>
+                        THC €{COSTI_SDB.thcSbarco} · Add. €{COSTI_SDB.addizionaliCompMar} · Del.Order €{COSTI_SDB.deliveryOrder} · Dog. €{COSTI_SDB.doganaImport} · Trasp. €{COSTI_SDB.trasportoInterno} +{COSTI_SDB.fuelTrasportoPct}%
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="fieldset">
+                    <div className="fieldset-head china-fs"><Ship size={12} /> Dati Spedizione</div>
+                    <div className="fieldset-body cols-4">
+                      <div className="fld"><label>Fornitore<span className="req">*</span></label>
+                        <input className="ctl" value={chinaParams.fornitore} onChange={e => setP('fornitore', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Indirizzo Fornitore</label>
+                        <input className="ctl" value={chinaParams.indirizzoFornitore} onChange={e => setP('indirizzoFornitore', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Fattura n°</label>
+                        <input className="ctl" value={chinaParams.fattura} onChange={e => setP('fattura', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Nr. Riferimento (7)</label>
+                        <input className="ctl" value={chinaParams.nrRiferimento} onChange={e => setP('nrRiferimento', e.target.value)} placeholder="1/161/1/SDB/461007465" />
+                      </div>
+                      <div className="fld"><label>Codice TARIC</label>
+                        <input className="ctl" value={chinaParams.codiceTaric} onChange={e => setP('codiceTaric', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Incoterm</label>
+                        <input className="ctl" value={chinaParams.incoterm} onChange={e => setP('incoterm', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Porto Imbarco</label>
+                        <input className="ctl" value={chinaParams.portoImbarco} onChange={e => setP('portoImbarco', e.target.value)} placeholder="QINGDAO" />
+                      </div>
+                      <div className="fld"><label>Porto Sbarco</label>
+                        <input className="ctl" value={chinaParams.portoSbarco} onChange={e => setP('portoSbarco', e.target.value)} placeholder="AUGUSTA" />
+                      </div>
+                      <div className="fld"><label>Nave</label>
+                        <input className="ctl" value={chinaParams.nave} onChange={e => setP('nave', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Container</label>
+                        <input className="ctl" value={chinaParams.container} onChange={e => setP('container', e.target.value)} placeholder="CXDU1036272" />
+                      </div>
+                      <div className="fld"><label>Data Spedizione</label>
+                        <input className="ctl" type="date" value={chinaParams.dataSpedizione} onChange={e => setP('dataSpedizione', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Regime (37)</label>
+                        <input className="ctl" value={chinaParams.regime} onChange={e => setP('regime', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Massa Lorda (kg)</label>
+                        <input className="ctl" type="number" step="0.01" value={chinaParams.massaLorda} onChange={e => setP('massaLorda', parseFloat(e.target.value) || 0)} />
+                      </div>
+                      <div className="fld"><label>Massa Netta (kg)</label>
+                        <input className="ctl" type="number" step="0.01" value={chinaParams.massaNetta} onChange={e => setP('massaNetta', parseFloat(e.target.value) || 0)} />
+                      </div>
+                      <div className="fld"><label>Doc. Precedente (40)</label>
+                        <input className="ctl" value={chinaParams.docPrecedente} onChange={e => setP('docPrecedente', e.target.value)} placeholder="26ITQUH33" />
+                      </div>
+                      <div className="fld"><label>Dilazione Pag. (48)</label>
+                        <input className="ctl" value={chinaParams.dilazionePagamento} onChange={e => setP('dilazionePagamento', e.target.value)} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="fieldset">
+                    <div className="fieldset-head china-fs"><Package size={12} /> Dati Importatore e Dichiarante</div>
+                    <div className="fieldset-body cols-4">
+                      <div className="fld"><label>Importatore</label>
+                        <input className="ctl" value={chinaParams.importatore} onChange={e => setP('importatore', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>P.IVA Importatore</label>
+                        <input className="ctl" value={chinaParams.importatorePiva} onChange={e => setP('importatorePiva', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Attività Importatore</label>
+                        <input className="ctl" value={chinaParams.importatoreAttivita} onChange={e => setP('importatoreAttivita', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Indirizzo Importatore</label>
+                        <input className="ctl" value={chinaParams.importatoreIndirizzo} onChange={e => setP('importatoreIndirizzo', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Dichiarante</label>
+                        <input className="ctl" value={chinaParams.dichiarante} onChange={e => setP('dichiarante', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>CF Dichiarante</label>
+                        <input className="ctl" value={chinaParams.dichiaranteCf} onChange={e => setP('dichiaranteCf', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Indirizzo Dichiarante</label>
+                        <input className="ctl" value={chinaParams.dichiaranteIndirizzo} onChange={e => setP('dichiaranteIndirizzo', e.target.value)} />
+                      </div>
+                      <div className="fld"><label>Spedizioniere</label>
+                        <input className="ctl" value={chinaParams.spedizioniere} onChange={e => setP('spedizioniere', e.target.value)} />
+                      </div>
+                    </div>
+                    <div style={{ padding: '0 10px 10px' }}>
+                      <label style={{ fontSize: 10, color: '#546e7a', fontWeight: 600, textTransform: 'uppercase' }}>Menzioni speciali / Documenti (44)</label>
+                      <textarea className="ctl" style={{ width: '100%', minHeight: 60, fontFamily: 'Consolas, monospace', fontSize: 10, padding: 6, resize: 'vertical' }} value={chinaParams.menzioniSpeciali} onChange={e => setP('menzioniSpeciali', e.target.value)} placeholder="Un documento per riga (es. Y923 - CN)" />
+                    </div>
+                  </div>
+
+                  <div className="fieldset">
+                    <div className="fieldset-head china-fs"><Calculator size={12} /> Cambio e Quantità</div>
+                    <div className="fieldset-body cols-4">
+                      <div className="fld"><label>Tasso EUR/USD<span className="req">*</span></label>
+                        <input className="ctl" type="number" step="0.0001" value={chinaParams.tassoEurUsd} onChange={e => setP('tassoEurUsd', parseFloat(e.target.value) || 1)} />
+                      </div>
+                      <div className="fld"><label>Tasso USD/EUR (calc.)</label>
+                        <input className="ctl calc" readOnly value={(1 / chinaParams.tassoEurUsd).toFixed(6)} />
+                      </div>
+                      <div className="fld"><label>Q.tà totale pz</label>
+                        <input className="ctl calc" readOnly value={chinaParams.qtyTotale} />
+                      </div>
+                      <div className="fld"><label>Valore FOB USD (calc.)</label>
+                        <input className="ctl calc" readOnly value={chinaCalcolo ? '$ ' + fmtEur(chinaCalcolo.fobTotUsd) : '—'} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="fieldset">
+                    <div className="fieldset-head china-fs"><Anchor size={12} /> Nolo Marittimo (USD)</div>
+                    <div className="fieldset-body cols-4">
+                      <div className="fld"><label>Nolo Mare</label><input className="ctl" type="number" step="0.01" value={chinaParams.noloMare} onChange={e => setP('noloMare', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>ECA Surcharge</label><input className="ctl" type="number" step="0.01" value={chinaParams.ecaSurcharge} onChange={e => setP('ecaSurcharge', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>ICS2</label><input className="ctl" type="number" step="0.01" value={chinaParams.ics2Usd} onChange={e => setP('ics2Usd', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Local Charge Orig.</label><input className="ctl" type="number" step="0.01" value={chinaParams.localChargeUsd} onChange={e => setP('localChargeUsd', parseFloat(e.target.value) || 0)} /></div>
+                    </div>
+                  </div>
+
+                  <div className="fieldset">
+                    <div className="fieldset-head china-fs"><Truck size={12} /> Extra Nolo EUR (art.74 non imp. IVA)</div>
+                    <div className="fieldset-body cols-4">
+                      <div className="fld"><label>THC Sbarco</label><input className="ctl" type="number" step="0.01" value={chinaParams.costiSbarco} onChange={e => setP('costiSbarco', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Addiz. Comp. Marittima</label><input className="ctl" type="number" step="0.01" value={chinaParams.addizionaliCompMar} onChange={e => setP('addizionaliCompMar', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Dogana Import</label><input className="ctl" type="number" step="0.01" value={chinaParams.doganaImport} onChange={e => setP('doganaImport', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Fuel Surcharge (EUR)</label><input className="ctl" type="number" step="0.01" value={chinaParams.fuelSurcharge} onChange={e => setP('fuelSurcharge', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>ECA EUR</label><input className="ctl" type="number" step="0.01" value={chinaParams.ecaEur} onChange={e => setP('ecaEur', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>ICS2 EUR</label><input className="ctl" type="number" step="0.01" value={chinaParams.ics2Eur} onChange={e => setP('ics2Eur', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Local Charge EUR</label><input className="ctl" type="number" step="0.01" value={chinaParams.localChargeEur} onChange={e => setP('localChargeEur', parseFloat(e.target.value) || 0)} /></div>
+                    </div>
+                  </div>
+
+                  <div className="fieldset">
+                    <div className="fieldset-head china-fs"><FileText size={12} /> Servizi con IVA 22% e Voci Fisse</div>
+                    <div className="fieldset-body cols-4">
+                      <div className="fld"><label>Delivery Order</label><input className="ctl" type="number" step="0.01" value={chinaParams.deliveryOrder} onChange={e => setP('deliveryOrder', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Trasporto Interno</label><input className="ctl" type="number" step="0.01" value={chinaParams.trasportoInterno} onChange={e => setP('trasportoInterno', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Fuel Trasporto %</label><input className="ctl" type="number" step="0.1" value={chinaParams.fuelTrasportoPct} onChange={e => setP('fuelTrasportoPct', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Fuel Trasporto €</label><input className="ctl calc" readOnly value={'€ ' + fmtEur((chinaParams.trasportoInterno || 0) * (chinaParams.fuelTrasportoPct || 0) / 100)} /></div>
+                      <div className="fld"><label>IVA Spedizioniere</label><input className="ctl" type="number" step="0.01" value={chinaParams.ivaSpedizioniere} onChange={e => setP('ivaSpedizioniere', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Commissioni</label><input className="ctl" type="number" step="0.01" value={chinaParams.commissioni} onChange={e => setP('commissioni', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Aggiustamento (v.45) €</label><input className="ctl" type="number" step="0.01" value={chinaParams.aggiustamento} onChange={e => setP('aggiustamento', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Unità 9AJ (pz)</label><input className="ctl" type="number" step="1" value={chinaParams.unita9AJ} onChange={e => setP('unita9AJ', parseInt(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>9AJ Totale €</label><input className="ctl calc" readOnly value={'€ ' + fmtEur((chinaParams.unita9AJ || 0) * 1.0908)} /></div>
+                      <div className="fld"><label>9AJ Manuale (override)</label><input className="ctl" type="number" step="0.01" value={chinaParams.dirittoDoganale9AJ} onChange={e => setP('dirittoDoganale9AJ', parseFloat(e.target.value) || 0)} /></div>
+                    </div>
+                  </div>
+
+                  <div className="fieldset">
+                    <div className="fieldset-head china-fs"><Calculator size={12} /> Aliquote Fiscali e Markup</div>
+                    <div className="fieldset-body cols-4">
+                      <div className="fld"><label>Dazio A00 (%)</label><input className="ctl" type="number" step="0.01" value={chinaParams.dazioPct} onChange={e => setP('dazioPct', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>IVA B00 (%)</label><input className="ctl" type="number" step="0.01" value={chinaParams.ivaPct} onChange={e => setP('ivaPct', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Antidumping (%)</label><input className="ctl" type="number" step="0.01" value={chinaParams.antidumpingPct} onChange={e => setP('antidumpingPct', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Markup vendita</label><input className="ctl" type="number" step="0.01" value={chinaParams.markup} onChange={e => setP('markup', parseFloat(e.target.value) || 1)} /></div>
+                    </div>
+                  </div>
+
+                  <div className="fieldset">
+                    <div className="fieldset-head china-fs"><Package size={12} /> PFU per Fascia Peso (€/pz)</div>
+                    <div className="fieldset-body cols-4">
+                      <div className="fld"><label>Fino 7kg (13-14")</label><input className="ctl" type="number" step="0.01" value={chinaParams.pfuFino7} onChange={e => setP('pfuFino7', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>7-15kg (15-17")</label><input className="ctl" type="number" step="0.01" value={chinaParams.pfu7_15} onChange={e => setP('pfu7_15', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>15-30kg (SUV)</label><input className="ctl" type="number" step="0.01" value={chinaParams.pfu15_30} onChange={e => setP('pfu15_30', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>30-60kg</label><input className="ctl" type="number" step="0.01" value={chinaParams.pfu30_60} onChange={e => setP('pfu30_60', parseFloat(e.target.value) || 0)} /></div>
+                      <div className="fld"><label>Oltre 60kg</label><input className="ctl" type="number" step="0.01" value={chinaParams.pfuOltre60} onChange={e => setP('pfuOltre60', parseFloat(e.target.value) || 0)} /></div>
+                    </div>
+                  </div>
+
+                  {chinaCalcolo && (
+                    <div className="kpi-row-china">
+                      <div className="kpi-box"><div className="lbl">FOB Totale</div><div className="val">€ {fmtEur(chinaCalcolo.fobTotEur)}</div></div>
+                      <div className="kpi-box"><div className="lbl">Valore Statistico</div><div className="val">€ {fmtEur(chinaCalcolo.valoreStatistico)}</div></div>
+                      <div className="kpi-box accent"><div className="lbl">Dazio A00</div><div className="val">€ {fmtEur(chinaCalcolo.dazioTotale)}</div></div>
+                      <div className="kpi-box accent"><div className="lbl">IVA B00</div><div className="val">€ {fmtEur(chinaCalcolo.ivaTotale)}</div></div>
+                      <div className="kpi-box success"><div className="lbl">Tot. Imposizioni</div><div className="val">€ {fmtEur(chinaCalcolo.totaleImposizioni)}</div></div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* STEP 3 - Preview */}
+              {chinaStep === 'preview' && chinaCalcolo && (
+                <>
+                  <div className="notice">
+                    <AlertCircle size={14} />
+                    <div>Questa è l'anteprima della <b>Bolla Doganale (DAU)</b>. Verifica i valori. Una volta confermata, gli articoli verranno caricati nel Catalogo con il costo finale calcolato, e potrai generare il PDF dall'archivio Bolle Doganali.</div>
+                  </div>
+
+                  <div className="bolla-preview">
+                    <div className="bolla-header">
+                      DATI TRASMESSI ALLA DOGANA IN H1 — DOGANA DI AUGUSTA / SOT AUGUSTA<br/>
+                      {chinaParams.fornitore} — {chinaParams.fattura || 'Fattura n/a'}
+                    </div>
+
+                    <div className="bolla-grid-big">
+                      <div className="fieldset" style={{ margin: 0 }}>
+                        <div className="fieldset-head">Dati Generali</div>
+                        <div style={{ padding: 8, fontSize: 11 }}>
+                          <div className="sup-row-item"><span className="lbl">Speditore</span><span className="val">{chinaParams.fornitore}</span></div>
+                          <div className="sup-row-item"><span className="lbl">Importatore</span><span className="val">{chinaParams.importatore}</span></div>
+                          <div className="sup-row-item"><span className="lbl">Paese origine</span><span className="val">CINA</span></div>
+                          <div className="sup-row-item"><span className="lbl">Incoterm</span><span className="val">{chinaParams.incoterm}</span></div>
+                          <div className="sup-row-item"><span className="lbl">Container</span><span className="val">{chinaParams.container || '—'}</span></div>
+                          <div className="sup-row-item"><span className="lbl">Cambio</span><span className="val">{chinaParams.tassoEurUsd.toFixed(4)} EUR/USD</span></div>
+                          <div className="sup-row-item"><span className="lbl">Tot. colli</span><span className="val">{chinaCalcolo.qtyTot}</span></div>
+                          <div className="sup-row-item"><span className="lbl">Cod. TARIC</span><span className="val">{chinaParams.codiceTaric}</span></div>
+                        </div>
+                      </div>
+                      <div className="fieldset" style={{ margin: 0 }}>
+                        <div className="fieldset-head">Valori Base</div>
+                        <div style={{ padding: 8, fontSize: 11 }}>
+                          <div className="sup-row-item"><span className="lbl">FOB USD</span><span className="val">$ {fmtEur(chinaCalcolo.fobTotUsd)}</span></div>
+                          <div className="sup-row-item"><span className="lbl">FOB EUR</span><span className="val">€ {fmtEur(chinaCalcolo.fobTotEur)}</span></div>
+                          <div className="sup-row-item"><span className="lbl">Nolo totale EUR</span><span className="val">€ {fmtEur(chinaCalcolo.noloTotEur)}</span></div>
+                          <div className="sup-row-item"><span className="lbl">Nolo per pezzo</span><span className="val">€ {fmtEur(chinaCalcolo.noloPerPezzo)}</span></div>
+                          <div className="sup-row-item"><span className="lbl">Extra nolo art.74</span><span className="val">€ {fmtEur(chinaCalcolo.extraNoloTot)}</span></div>
+                          <div className="sup-row-item"><span className="lbl">Servizi IVA 22%</span><span className="val">€ {fmtEur(chinaCalcolo.serviziIvaTot)}</span></div>
+                          <div className="sup-row-item"><span className="lbl" style={{ color: '#b71c1c', fontWeight: 700 }}>Valore Statistico</span><span className="val" style={{ color: '#b71c1c', fontWeight: 700 }}>€ {fmtEur(chinaCalcolo.valoreStatistico)}</span></div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ fontWeight: 700, marginBottom: 4, fontSize: 12 }}>47 — CALCOLO DELLE IMPOSIZIONI</div>
+                    <table className="bolla-tab">
+                      <thead>
+                        <tr><th>Tipo</th><th>Descrizione</th><th style={{textAlign:'right'}}>Base Imp. €</th><th style={{textAlign:'right'}}>Aliquota %</th><th style={{textAlign:'right'}}>Importo €</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr><td><b>A00</b></td><td>Dazio Doganale</td><td className="num">{fmtEur(chinaCalcolo.valoreStatistico)}</td><td className="num">{chinaParams.dazioPct.toFixed(4)}</td><td className="num"><b>{fmtEur(chinaCalcolo.dazioTotale)}</b></td></tr>
+                        {chinaParams.antidumpingPct > 0 && <tr><td><b>A30</b></td><td>Antidumping</td><td className="num">{fmtEur(chinaCalcolo.valoreStatistico)}</td><td className="num">{chinaParams.antidumpingPct.toFixed(4)}</td><td className="num"><b>{fmtEur(chinaCalcolo.antidumpingTotale)}</b></td></tr>}
+                        <tr><td><b>9AJ</b></td><td>Diritto Doganale Marittimo ({chinaParams.unita9AJ || 4} × 1,0908 €)</td><td className="num">{fmtEur(chinaParams.unita9AJ || 4)}</td><td className="num">1,0908</td><td className="num"><b>{fmtEur(chinaCalcolo.dirittoTotale9AJ)}</b></td></tr>
+                        <tr><td><b>B00</b></td><td>IVA Importazione</td><td className="num">{fmtEur(chinaCalcolo.valoreStatistico + chinaCalcolo.dazioTotale + chinaCalcolo.antidumpingTotale + chinaCalcolo.dirittoTotale9AJ)}</td><td className="num">{chinaParams.ivaPct.toFixed(4)}</td><td className="num"><b>{fmtEur(chinaCalcolo.ivaTotale)}</b></td></tr>
+                        <tr className="tot-row"><td colSpan="4"><b>TOTALE IMPOSIZIONI BOLLA</b></td><td className="num"><b>€ {fmtEur(chinaCalcolo.totaleImposizioni)}</b></td></tr>
+                      </tbody>
+                    </table>
+
+                    <div style={{ fontWeight: 700, marginTop: 12, marginBottom: 4, fontSize: 12 }}>DETTAGLIO ARTICOLI — COSTO FINALE PER PNEUMATICO</div>
+                    <div className="preview-box" style={{ maxHeight: 300 }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>#</th><th>Modello</th><th>Misura</th><th className="num">Qty</th>
+                            <th className="num">USD/pz</th><th className="num">CIF €</th>
+                            <th className="num">Dazio</th><th className="num">IVA</th><th className="num">PFU</th>
+                            <th className="num" style={{ background: '#0d47a1', color: '#fff' }}>Costo Fin.</th>
+                            <th className="num" style={{ background: '#2e7d32', color: '#fff' }}>P. Vendita</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {chinaCalcolo.righe.map((r, i) => (
+                            <tr key={i}>
+                              <td>{i + 1}</td>
+                              <td>{r.modello || '—'}</td>
+                              <td>{r.misura || '—'}</td>
+                              <td className="num">{r.qty}</td>
+                              <td className="num">{fmtEur(r.prezzoUsd)}</td>
+                              <td className="num">{fmtEur(r.cifPerPezzo)}</td>
+                              <td className="num">{fmtEur(r.dazioPerPezzo)}</td>
+                              <td className="num">{fmtEur(r.ivaPerPezzo)}</td>
+                              <td className="num">{fmtEur(r.pfuPezzo)}</td>
+                              <td className="num" style={{ background: '#e3f2fd', fontWeight: 700 }}>€ {fmtEur(r.costoFinale)}</td>
+                              <td className="num" style={{ background: '#e8f5e9', fontWeight: 700, color: '#1b5e20' }}>€ {fmtEur(r.prezzoVendita)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div style={{ marginTop: 10, background: '#e8eaf6', border: '1px solid #7986cb', padding: 10, display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, fontSize: 12 }}>
+                      <div><span style={{ color: '#546e7a' }}>Costo totale import:</span><br/><b style={{ fontSize: 15, color: '#0d47a1' }}>€ {fmtEur(chinaCalcolo.costoTotaleImport)}</b></div>
+                      <div><span style={{ color: '#546e7a' }}>Costo medio/pz:</span><br/><b style={{ fontSize: 15, color: '#0d47a1' }}>€ {fmtEur(chinaCalcolo.costoTotaleImport / chinaCalcolo.qtyTot)}</b></div>
+                      <div><span style={{ color: '#546e7a' }}>Ricarico vendita:</span><br/><b style={{ fontSize: 15, color: '#2e7d32' }}>× {chinaParams.markup}</b></div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="modal-foot">
+              <span style={{ fontSize: 11, color: '#455a64' }}>
+                {chinaStep === 'mapping' && `Righe file: ${chinaRawData.length - 1} · Modalità: Import Listino`}
+                {chinaStep === 'parameters' && chinaCalcolo && `Articoli: ${chinaItems.length} · Pezzi: ${chinaCalcolo.qtyTot} · Modalità: Bolla Doganale`}
+                {chinaStep === 'preview' && chinaCalcolo && `Pronto alla generazione bolla`}
+              </span>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="tbtn" onClick={cancelChinaImport}>Annulla</button>
+                {chinaStep === 'mapping' && (
+                  <button className="tbtn success" onClick={confirmChinaMapping}>
+                    <Check size={12} /> Importa Listino nel Catalogo
+                  </button>
+                )}
+                {chinaStep === 'parameters' && <>
+                  <button className="tbtn primary" onClick={() => setChinaStep('preview')} disabled={!chinaCalcolo}>Anteprima DAU ▸</button>
+                </>}
+                {chinaStep === 'preview' && <>
+                  <button className="tbtn" onClick={() => setChinaStep('parameters')}>◂ Indietro</button>
+                  <button className="tbtn" onClick={() => {
+                    if (!chinaCalcolo) return;
+                    const fakeBolla = { id: 'preview_' + Date.now(), supplierId: 'preview', data: new Date().toISOString(), params: { ...chinaParams }, calcolo: chinaCalcolo, items: [] };
+                    generaPdfBolla(fakeBolla, 'ufficiale');
+                  }}><Printer size={12} /> Anteprima PDF DAU</button>
+                  <button className="tbtn" onClick={() => {
+                    if (!chinaCalcolo) return;
+                    const fakeBolla = { id: 'preview_' + Date.now(), supplierId: 'preview', data: new Date().toISOString(), params: { ...chinaParams }, calcolo: chinaCalcolo, items: [] };
+                    generaPdfBolla(fakeBolla, 'semplificato');
+                  }}><FileText size={12} /> Anteprima Riepilogo</button>
+                  {bollaMode === 'selection' && (
+                    <label style={{ fontSize: 11, display: 'flex', alignItems: 'center', gap: 4, padding: '0 6px', color: '#0d47a1', background: '#e3f2fd', border: '1px solid #90caf9', borderRadius: 2, height: 26 }}>
+                      <input type="checkbox" checked={updateCatalogOnConfirm} onChange={e => setUpdateCatalogOnConfirm(e.target.checked)} />
+                      Aggiorna prezzi Catalogo
+                    </label>
+                  )}
+                  <button className="tbtn success" onClick={confirmChinaImport}><Check size={12} /> Conferma e Salva Bolla</button>
+                </>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
