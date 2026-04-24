@@ -1029,6 +1029,80 @@ export default function GestionaleImportazioni() {
 
   const uniqueMarche = useMemo(() => Array.from(new Set(allItems.map(i => i.marca).filter(Boolean))).sort(), [allItems]);
 
+  // ===== GESTIONE PARAMETRI PER-FORNITORE =====
+  // Ritorna i parametri effettivi di un fornitore (suoi o globali se useGlobal)
+  const getEffectiveParams = (supplierId) => {
+    const sp = supplierParams[supplierId];
+    if (!sp || sp.useGlobal) return chinaParams;
+    return { ...chinaParams, ...sp.params };
+  };
+
+  // Aggiorna un singolo parametro per un fornitore (disattiva useGlobal)
+  const updateSupplierParam = (supplierId, key, value) => {
+    setSupplierParams(prev => ({
+      ...prev,
+      [supplierId]: {
+        useGlobal: false,
+        params: { ...(prev[supplierId]?.params || chinaParams), [key]: value }
+      }
+    }));
+  };
+
+  // Ripristina un fornitore ai parametri globali
+  const resetSupplierToGlobal = (supplierId) => {
+    if (!confirm('Ripristinare i parametri globali per questo fornitore?')) return;
+    setSupplierParams(prev => ({
+      ...prev,
+      [supplierId]: { useGlobal: true, params: {} }
+    }));
+  };
+
+  // Applica preset nolo a un fornitore specifico
+  const applyPresetToSupplier = (supplierId, presetKey) => {
+    const preset = NOLO_PRESETS[presetKey];
+    if (!preset) return;
+    const base = supplierParams[supplierId]?.useGlobal === false
+      ? { ...supplierParams[supplierId].params }
+      : { ...chinaParams };
+    const newParams = {
+      ...base,
+      noloMare: preset.noloMare,
+      fuelSurcharge: preset.fuelSurcharge,
+      ics2Usd: preset.ics2Usd,
+      ecaSurcharge: preset.ecaSurcharge,
+      noloPreset: presetKey,
+      costiSbarco: COSTI_SDB.thcSbarco,
+      addizionaliCompMar: COSTI_SDB.addizionaliCompMar,
+      deliveryOrder: COSTI_SDB.deliveryOrder,
+      doganaImport: COSTI_SDB.doganaImport,
+      trasportoInterno: COSTI_SDB.trasportoInterno,
+      fuelTrasportoPct: COSTI_SDB.fuelTrasportoPct
+    };
+    setSupplierParams(prev => ({
+      ...prev,
+      [supplierId]: { useGlobal: false, params: newParams }
+    }));
+  };
+
+  // ===== SCOMPOSIZIONE LIVE PER CATALOGO =====
+  // Per ogni articolo CN, calcola la scomposizione usando i parametri del suo fornitore
+  const scomposizioneCatalogo = useMemo(() => {
+    const result = {};
+    for (const it of allItems) {
+      if (it.origine !== 'CN') continue;
+      const sp = supplierParams[it.supplierId];
+      const effParams = (!sp || sp.useGlobal) ? chinaParams : { ...chinaParams, ...sp.params };
+      const simItem = {
+        prezzoUsd: it.prezzoOriginale,
+        qty: it.qtyImportata || it.qtyDisponibile || 1,
+        pfuFascia: it.pfuFascia || '7_15'
+      };
+      const qtyRif = parseFloat(effParams.qtyTotale) || simItem.qty || 1;
+      result[it.id] = calcolaScomposizione(simItem, { ...effParams, qtyTotale: qtyRif });
+    }
+    return result;
+  }, [allItems, supplierParams, chinaParams]);
+
   const filteredItems = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
     let list = allItems.filter(i => {
@@ -1106,62 +1180,6 @@ export default function GestionaleImportazioni() {
   }, [allItems, compareMisuraQuery, scomposizioneCatalogo]);
 
   const toggleSort = (field) => setSortBy(s => ({ field, dir: s.field === field && s.dir === 'asc' ? 'desc' : 'asc' }));
-
-  // ===== GESTIONE PARAMETRI PER-FORNITORE =====
-  // Ritorna i parametri effettivi di un fornitore (suoi o globali se useGlobal)
-  const getEffectiveParams = (supplierId) => {
-    const sp = supplierParams[supplierId];
-    if (!sp || sp.useGlobal) return chinaParams;
-    return { ...chinaParams, ...sp.params };
-  };
-
-  // Aggiorna un singolo parametro per un fornitore (disattiva useGlobal)
-  const updateSupplierParam = (supplierId, key, value) => {
-    setSupplierParams(prev => ({
-      ...prev,
-      [supplierId]: {
-        useGlobal: false,
-        params: { ...(prev[supplierId]?.params || chinaParams), [key]: value }
-      }
-    }));
-  };
-
-  // Ripristina un fornitore ai parametri globali
-  const resetSupplierToGlobal = (supplierId) => {
-    if (!confirm('Ripristinare i parametri globali per questo fornitore?')) return;
-    setSupplierParams(prev => ({
-      ...prev,
-      [supplierId]: { useGlobal: true, params: {} }
-    }));
-  };
-
-  // Applica preset nolo a un fornitore specifico
-  const applyPresetToSupplier = (supplierId, presetKey) => {
-    const preset = NOLO_PRESETS[presetKey];
-    if (!preset) return;
-    const base = supplierParams[supplierId]?.useGlobal === false
-      ? { ...supplierParams[supplierId].params }
-      : { ...chinaParams };
-    const newParams = {
-      ...base,
-      noloMare: preset.noloMare,
-      fuelSurcharge: preset.fuelSurcharge,
-      ics2Usd: preset.ics2Usd,
-      ecaSurcharge: preset.ecaSurcharge,
-      noloPreset: presetKey,
-      // Applica anche costi SDB
-      costiSbarco: COSTI_SDB.thcSbarco,
-      addizionaliCompMar: COSTI_SDB.addizionaliCompMar,
-      deliveryOrder: COSTI_SDB.deliveryOrder,
-      doganaImport: COSTI_SDB.doganaImport,
-      trasportoInterno: COSTI_SDB.trasportoInterno,
-      fuelTrasportoPct: COSTI_SDB.fuelTrasportoPct
-    };
-    setSupplierParams(prev => ({
-      ...prev,
-      [supplierId]: { useGlobal: false, params: newParams }
-    }));
-  };
 
   // Export intero catalogo in Excel (tutti gli articoli)
   const exportCatalogoExcel = () => {
@@ -1275,25 +1293,6 @@ export default function GestionaleImportazioni() {
     if (!simulatorOpen || !simParams || !simulatorTarget) return null;
     return calcolaScomposizione(simulatorTarget.simItem, simParams);
   }, [simulatorOpen, simParams, simulatorTarget]);
-
-  // ===== SCOMPOSIZIONE LIVE PER CATALOGO =====
-  // Per ogni articolo CN, calcola la scomposizione usando i parametri del suo fornitore
-  const scomposizioneCatalogo = useMemo(() => {
-    const result = {};
-    for (const it of allItems) {
-      if (it.origine !== 'CN') continue;
-      const effParams = getEffectiveParams(it.supplierId);
-      const simItem = {
-        prezzoUsd: it.prezzoOriginale,
-        qty: it.qtyImportata || it.qtyDisponibile || 1,
-        pfuFascia: it.pfuFascia || '7_15'
-      };
-      // Uso qty riferimento specifica del fornitore
-      const qtyRif = parseFloat(effParams.qtyTotale) || simItem.qty || 1;
-      result[it.id] = calcolaScomposizione(simItem, { ...effParams, qtyTotale: qtyRif });
-    }
-    return result;
-  }, [allItems, supplierParams, chinaParams]);
 
   const fmtEur = (n) => new Intl.NumberFormat('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
   const fmtInt = (n) => new Intl.NumberFormat('it-IT').format(n || 0);
