@@ -227,6 +227,9 @@ export default function GestionaleImportazioni() {
   const [activeSection, setActiveSection] = useState('catalogo');
   const [compactView, setCompactView] = useState(false); // vista compatta catalogo
   const [compareMisuraQuery, setCompareMisuraQuery] = useState(''); // ricerca misura nel confronto
+  const [openMenu, setOpenMenu] = useState(null); // 'archivio'|'modifica'|'visualizza'|'strumenti'|'help'
+  const [showGuideModal, setShowGuideModal] = useState(false);
+  const paramsFileInputRef = useRef(null);
 
   // ===== SIMULATORE WHAT-IF =====
   const [simulatorOpen, setSimulatorOpen] = useState(false);
@@ -1071,6 +1074,108 @@ export default function GestionaleImportazioni() {
   }, [allItems, compareMisuraQuery]);
 
   const toggleSort = (field) => setSortBy(s => ({ field, dir: s.field === field && s.dir === 'asc' ? 'desc' : 'asc' }));
+
+  // Export intero catalogo in Excel (tutti gli articoli)
+  const exportCatalogoExcel = () => {
+    if (allItems.length === 0) { alert('Catalogo vuoto'); return; }
+    const wb = XLSX.utils.book_new();
+    const rows = allItems.map((it, i) => ({
+      '#': i + 1,
+      'Origine': it.origine,
+      'Fornitore': it.supplierName,
+      'Marca': it.marca,
+      'Modello': it.modello || '',
+      'Misura': it.misura || '',
+      'Prezzo originale': it.prezzoOriginale,
+      'Valuta': it.currency,
+      'Prezzo EUR': it.prezzoEur,
+      'PFU €': it.pfu,
+      'Trasporto/U €': it.trasportoPerUnit,
+      'Dazio €': it.dazio,
+      'IVA €': it.iva,
+      'Prezzo Finale €': it.prezzoFinale,
+      'Prezzo Vendita €': it.prezzoVendita || '',
+      'Qtà disponibile': it.qtyDisponibile || it.qtyImportata || '',
+      'Tipo prezzo': it.lastBollaId ? 'REALE' : (it.origine === 'CN' ? 'STIMA' : 'REALE')
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [
+      { wch: 5 }, { wch: 8 }, { wch: 18 }, { wch: 14 }, { wch: 18 }, { wch: 14 },
+      { wch: 14 }, { wch: 6 }, { wch: 12 }, { wch: 8 }, { wch: 12 }, { wch: 10 },
+      { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 10 }
+    ];
+    XLSX.utils.book_append_sheet(wb, ws, 'Catalogo');
+    XLSX.writeFile(wb, `catalogo_completo_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  // Export parametri (chinaParams) in JSON
+  const exportParams = () => {
+    const data = {
+      version: '1.6',
+      exportDate: new Date().toISOString(),
+      chinaParams: chinaParams
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `parametri_gestionale_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // Import parametri da JSON
+  const importParams = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (data.chinaParams) {
+          if (confirm('Sovrascrivere i parametri attuali con quelli del file?')) {
+            setChinaParams(prev => ({ ...prev, ...data.chinaParams }));
+            alert('Parametri importati con successo');
+          }
+        } else {
+          alert('File non valido: non contiene parametri riconosciuti');
+        }
+      } catch (err) {
+        alert('Errore nella lettura del file JSON: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  // Svuota archivio completo (con conferma)
+  const clearAllArchive = () => {
+    if (!confirm('ATTENZIONE: questa azione elimina TUTTI gli articoli, fornitori, selezioni e bolle. Vuoi davvero procedere?')) return;
+    if (!confirm('Ultima conferma: tutti i dati saranno persi definitivamente. Procedere?')) return;
+    setAllItems([]);
+    setSuppliers([]);
+    setSelectedItems([]);
+    setBolle([]);
+    setSearchQuery(''); setFilterMarca(''); setFilterSupplier(''); setFilterOrigine('');
+    alert('Archivio svuotato.');
+  };
+
+  // Apri simulatore dal menu strumenti: usa primo articolo selezionato o primo del catalogo
+  const openSimulatorFromMenu = () => {
+    if (selectedItems.length > 0) {
+      openSimulatorFromItem(selectedItems[0]);
+    } else if (allItems.length > 0) {
+      openSimulatorFromItem(allItems[0]);
+    } else {
+      alert('Nessun articolo disponibile. Importa prima un listino.');
+    }
+  };
+
+  // Menu click handler: chiude menu dopo azione
+  const menuAction = (fn) => {
+    setOpenMenu(null);
+    if (typeof fn === 'function') setTimeout(fn, 50);
+  };
 
   // Calcolo LIVE della scomposizione: baseline e simulata
   const simScomposizioneBaseline = useMemo(() => {
@@ -1997,22 +2102,167 @@ export default function GestionaleImportazioni() {
           .sim-body { grid-template-columns: 1fr; }
           .sim-left { max-height: 40vh; }
         }
+
+        /* ===== MENU DROPDOWN ===== */
+        .menubar-item { position: relative; cursor: pointer; user-select: none; }
+        .menubar-item.open { background: #1976d2; color: #fff; }
+        .menu-dropdown { position: absolute; top: 100%; left: 0; min-width: 240px; background: #fff; border: 1px solid #0d47a1; box-shadow: 4px 4px 12px rgba(0,0,0,0.25); z-index: 150; padding: 3px 0; cursor: default; }
+        .menu-dropdown-right { left: auto; right: 0; }
+        .menu-dd-item { display: flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 11px; color: #263238; cursor: pointer; transition: background 0.1s; white-space: nowrap; }
+        .menu-dd-item:hover { background: #e3f2fd; color: #0d47a1; }
+        .menu-dd-item.active { background: #bbdefb; color: #0d47a1; font-weight: 700; }
+        .menu-dd-item.danger:hover { background: #ffcdd2; color: #b71c1c; }
+        .menu-dd-sep { height: 1px; background: #cfd8dc; margin: 3px 0; }
+        .menu-dd-badge { margin-left: auto; background: #eceff1; color: #546e7a; padding: 1px 6px; border-radius: 8px; font-size: 9px; font-weight: 700; }
+        .menu-dd-item:hover .menu-dd-badge { background: #1976d2; color: #fff; }
+        .menu-dd-hint { margin-left: auto; font-size: 9px; color: #90a4ae; font-style: italic; }
+
+        /* ===== MODALE GUIDA ===== */
+        .guide-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.65); z-index: 200; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        .guide-modal { background: #fff; border: 2px solid #0d47a1; max-width: 800px; max-height: 90vh; width: 100%; display: flex; flex-direction: column; }
+        .guide-header { background: linear-gradient(to bottom, #1976d2, #0d47a1); color: #fff; padding: 10px 16px; display: flex; justify-content: space-between; align-items: center; }
+        .guide-header h2 { margin: 0; font-size: 15px; }
+        .guide-body { padding: 16px 22px; overflow-y: auto; font-size: 13px; line-height: 1.5; color: #263238; }
+        .guide-body h3 { color: #0d47a1; font-size: 14px; margin: 16px 0 6px 0; border-bottom: 1px solid #bbdefb; padding-bottom: 3px; }
+        .guide-body h3:first-child { margin-top: 0; }
+        .guide-body ul { margin: 4px 0 8px 0; padding-left: 22px; }
+        .guide-body li { margin-bottom: 3px; }
+        .guide-body code { background: #eceff1; padding: 1px 4px; border-radius: 2px; font-size: 12px; color: #b71c1c; }
+        .guide-body b { color: #0d47a1; }
+        .guide-footer { background: #eceff1; padding: 8px 16px; border-top: 1px solid #cfd8dc; display: flex; justify-content: flex-end; }
       `}</style>
 
       {/* MENU BAR */}
-      <div className="menubar">
-        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v1.5</div>
-        <div className="menubar-item">Archivio</div>
-        <div className="menubar-item">Modifica</div>
-        <div className="menubar-item">Visualizza</div>
-        <div className="menubar-item">Strumenti</div>
-        <div className="menubar-item">?</div>
+      <div className="menubar" onMouseLeave={() => setOpenMenu(null)}>
+        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v1.6</div>
+
+        {/* ARCHIVIO */}
+        <div className={`menubar-item ${openMenu === 'archivio' ? 'open' : ''}`} onClick={() => setOpenMenu(openMenu === 'archivio' ? null : 'archivio')}>
+          Archivio
+          {openMenu === 'archivio' && (
+            <div className="menu-dropdown" onClick={e => e.stopPropagation()}>
+              <div className="menu-dd-item" onClick={() => menuAction(() => fileInputRef.current?.click())}>
+                <Globe2 size={12} /> Nuovo Import Europa
+              </div>
+              <div className="menu-dd-item" onClick={() => menuAction(() => { cancelChinaImport(); setBollaMode('file'); setChinaStep('upload'); chinaFileInputRef.current?.click(); })}>
+                <Ship size={12} /> Nuovo Import Cina
+              </div>
+              <div className="menu-dd-sep"></div>
+              <div className="menu-dd-item" onClick={() => menuAction(exportCatalogoExcel)}>
+                <FileSpreadsheet size={12} /> Esporta Catalogo Excel
+              </div>
+              <div className="menu-dd-item" onClick={() => menuAction(exportParams)}>
+                <Download size={12} /> Esporta Parametri (JSON)
+              </div>
+              <div className="menu-dd-item" onClick={() => menuAction(() => paramsFileInputRef.current?.click())}>
+                <Upload size={12} /> Importa Parametri (JSON)
+              </div>
+              <div className="menu-dd-sep"></div>
+              <div className="menu-dd-item danger" onClick={() => menuAction(clearAllArchive)}>
+                <Trash2 size={12} /> Svuota Archivio Completo
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* MODIFICA */}
+        <div className={`menubar-item ${openMenu === 'modifica' ? 'open' : ''}`} onClick={() => setOpenMenu(openMenu === 'modifica' ? null : 'modifica')}>
+          Modifica
+          {openMenu === 'modifica' && (
+            <div className="menu-dropdown" onClick={e => e.stopPropagation()}>
+              <div className="menu-dd-item" onClick={() => menuAction(() => setSelectedItems([]))}>
+                <X size={12} /> Svuota Selezione ({selectedItems.length})
+              </div>
+              <div className="menu-dd-item" onClick={() => menuAction(() => { setSearchQuery(''); setFilterMarca(''); setFilterSupplier(''); setFilterOrigine(''); })}>
+                <Search size={12} /> Azzera Filtri Catalogo
+              </div>
+              <div className="menu-dd-sep"></div>
+              <div className="menu-dd-item" onClick={() => menuAction(() => setCompactView(!compactView))}>
+                <List size={12} /> Vista Compatta: {compactView ? 'ON' : 'OFF'}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* VISUALIZZA */}
+        <div className={`menubar-item ${openMenu === 'visualizza' ? 'open' : ''}`} onClick={() => setOpenMenu(openMenu === 'visualizza' ? null : 'visualizza')}>
+          Visualizza
+          {openMenu === 'visualizza' && (
+            <div className="menu-dropdown" onClick={e => e.stopPropagation()}>
+              <div className={`menu-dd-item ${activeSection === 'catalogo' ? 'active' : ''}`} onClick={() => menuAction(() => setActiveSection('catalogo'))}>
+                <Database size={12} /> Catalogo <span className="menu-dd-badge">{allItems.length}</span>
+              </div>
+              <div className={`menu-dd-item ${activeSection === 'selezione' ? 'active' : ''}`} onClick={() => menuAction(() => setActiveSection('selezione'))}>
+                <ShoppingCart size={12} /> Selezione <span className="menu-dd-badge">{selectedItems.length}</span>
+              </div>
+              <div className={`menu-dd-item ${activeSection === 'fornitori' ? 'active' : ''}`} onClick={() => menuAction(() => setActiveSection('fornitori'))}>
+                <FolderOpen size={12} /> Fornitori <span className="menu-dd-badge">{suppliers.length}</span>
+              </div>
+              <div className={`menu-dd-item ${activeSection === 'confronto' ? 'active' : ''}`} onClick={() => menuAction(() => setActiveSection('confronto'))}>
+                <Search size={12} /> Confronto Prezzi <span className="menu-dd-badge">{comparisonData.length}</span>
+              </div>
+              <div className={`menu-dd-item ${activeSection === 'bolle' ? 'active' : ''}`} onClick={() => menuAction(() => setActiveSection('bolle'))}>
+                <FileText size={12} /> Bolle Doganali <span className="menu-dd-badge">{bolle.length}</span>
+              </div>
+              <div className="menu-dd-sep"></div>
+              <div className="menu-dd-item" onClick={() => menuAction(() => setCompactView(!compactView))}>
+                <List size={12} /> {compactView ? '☑' : '☐'} Vista Compatta
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* STRUMENTI */}
+        <div className={`menubar-item ${openMenu === 'strumenti' ? 'open' : ''}`} onClick={() => setOpenMenu(openMenu === 'strumenti' ? null : 'strumenti')}>
+          Strumenti
+          {openMenu === 'strumenti' && (
+            <div className="menu-dropdown" onClick={e => e.stopPropagation()}>
+              <div className="menu-dd-item" onClick={() => menuAction(openSimulatorFromMenu)}>
+                <Search size={12} /> Simulatore What-If
+                <span className="menu-dd-hint">{selectedItems.length > 0 ? 'usa primo selezionato' : 'usa primo del catalogo'}</span>
+              </div>
+              <div className="menu-dd-item" onClick={() => menuAction(openBollaFromSelection)}>
+                <FileText size={12} /> Genera Bolla da Selezione
+                <span className="menu-dd-badge">{selectedItems.filter(i => i.origine === 'CN').length}</span>
+              </div>
+              <div className="menu-dd-sep"></div>
+              <div className="menu-dd-item" onClick={() => menuAction(exportCatalogoExcel)}>
+                <FileSpreadsheet size={12} /> Export Catalogo Excel
+              </div>
+              <div className="menu-dd-item" onClick={() => menuAction(exportParams)}>
+                <Download size={12} /> Backup Parametri
+              </div>
+              <div className="menu-dd-item" onClick={() => menuAction(() => paramsFileInputRef.current?.click())}>
+                <Upload size={12} /> Ripristina Parametri
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ? HELP */}
+        <div className={`menubar-item ${openMenu === 'help' ? 'open' : ''}`} onClick={() => setOpenMenu(openMenu === 'help' ? null : 'help')}>
+          ?
+          {openMenu === 'help' && (
+            <div className="menu-dropdown menu-dropdown-right" onClick={e => e.stopPropagation()}>
+              <div className="menu-dd-item" onClick={() => menuAction(() => setShowGuideModal(true))}>
+                <FileText size={12} /> Guida Rapida
+              </div>
+              <div className="menu-dd-item" onClick={() => menuAction(() => alert('Gestionale Import v1.6\n\nSviluppato per gestione:\n• Import listini Europa/Cina\n• Bolle doganali DAU\n• Simulazione costi\n\nVentura Nicola — IT05495120874'))}>
+                <AlertCircle size={12} /> Info / Versione
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="menubar-right">
           <div className="menubar-right-item">UTENTE: operatore01</div>
           <div className="menubar-right-item">{today} · {now}</div>
           <div className="menubar-right-item status"><span className="dot"></span>CONNESSO</div>
         </div>
       </div>
+
+      {/* Input invisibile per import parametri */}
+      <input ref={paramsFileInputRef} type="file" accept=".json" onChange={importParams} style={{ display: 'none' }} />
 
       {/* TOOLBAR */}
       <div className="toolbar">
@@ -3278,6 +3528,74 @@ export default function GestionaleImportazioni() {
                   <Check size={12} /> Salva Modifiche {simulatorTarget.type === 'bolla' ? 'nella Bolla' : 'nei Parametri'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== MODALE GUIDA RAPIDA ===== */}
+      {showGuideModal && (
+        <div className="guide-overlay" onClick={() => setShowGuideModal(false)}>
+          <div className="guide-modal" onClick={e => e.stopPropagation()}>
+            <div className="guide-header">
+              <h2>📖 Guida Rapida — Gestionale Import v1.6</h2>
+              <button className="sim-close" onClick={() => setShowGuideModal(false)}>✕</button>
+            </div>
+            <div className="guide-body">
+              <h3>🇪🇺 Import Europa</h3>
+              <p>Carica un listino da fornitore europeo (Excel/CSV). I prezzi sono già in <b>EUR</b>. Il sistema calcola solo PFU + trasporto + markup.</p>
+              <ul>
+                <li>Toolbar → <code>Import Europa</code> oppure menu <code>Archivio › Nuovo Import Europa</code></li>
+                <li>Seleziona il file, poi mappa le colonne (Marca, Misura, Prezzo)</li>
+                <li>Gli articoli finiscono nel <b>Catalogo</b> con un tag verde <code>EU</code></li>
+              </ul>
+
+              <h3>🇨🇳 Import Cina (Listino)</h3>
+              <p>Carica un listino da fornitore cinese. I prezzi sono in <b>USD</b>. Il sistema calcola un prezzo EUR <b>stimato</b> con dazi+IVA+PFU standard.</p>
+              <ul>
+                <li>Toolbar → <code>Import Cina</code> oppure menu <code>Archivio › Nuovo Import Cina</code></li>
+                <li>Mappa colonne + imposta cambio EUR/USD, dazio% e IVA% per la stima</li>
+                <li>Gli articoli finiscono nel Catalogo con tag <code>CN</code> e badge arancione <code>STIMA</code></li>
+              </ul>
+
+              <h3>🛒 Selezione Articoli</h3>
+              <p>Dal Catalogo clicca sulle righe che vuoi ordinare, imposta la quantità nella sezione <b>Selezione</b>.</p>
+
+              <h3>📄 Genera Bolla Doganale (DAU)</h3>
+              <p>Dalla Selezione → pulsante <code>Genera Bolla DAU</code> (rosso). Il wizard apre con:</p>
+              <ul>
+                <li><b>Preset nolo Savino Del Bene</b> preselezionato (HoChiMin/Cina × 20'/40')</li>
+                <li>Costi fissi SDB precompilati (THC €210, Delivery €70, Dogana €95, Trasporto €315+10%)</li>
+                <li>Anteprima DAU con tutti i calcoli (dazio A00, IVA B00, 9AJ, antidumping)</li>
+                <li>Genera <b>PDF DAU ufficiale</b>, <b>PDF riepilogo</b> o <b>Excel dettaglio</b></li>
+                <li>Opzione <b>"Aggiorna prezzi Catalogo"</b>: gli articoli diventano <code>REALE</code> (verde)</li>
+              </ul>
+
+              <h3>🔍 Simulatore What-If</h3>
+              <p>Clicca sull'icona 🔍 accanto a qualsiasi articolo del Catalogo, o sul pulsante blu "Simulatore" in una bolla.</p>
+              <ul>
+                <li>Sinistra: tutti i parametri modificabili (cambio, nolo, dazio, IVA, PFU...)</li>
+                <li>Destra: scomposizione con formula per ogni voce + grafico a barre</li>
+                <li>I valori modificati sono <b>temporanei</b>: usa "Salva Modifiche" per applicarli davvero</li>
+                <li>Verde = più economico del baseline · Rosso = più caro</li>
+              </ul>
+
+              <h3>📊 Confronto Prezzi</h3>
+              <p>Menu <code>Visualizza › Confronto Prezzi</code>: raggruppa tutti gli articoli per misura e mostra il miglior prezzo con 🏆.</p>
+
+              <h3>⌨️ Scorciatoie utili</h3>
+              <ul>
+                <li><code>Archivio › Esporta Parametri</code>: salva tutti i tuoi parametri in un file JSON (backup)</li>
+                <li><code>Archivio › Importa Parametri</code>: ripristina un backup</li>
+                <li><code>Modifica › Vista Compatta</code>: più righe a schermo</li>
+                <li><code>Strumenti › Genera Bolla</code>: usa articoli Cina selezionati per bolla reale</li>
+              </ul>
+
+              <h3>💾 Dati</h3>
+              <p>Tutti i tuoi dati sono salvati <b>localmente</b> nel browser (storage). Fai backup regolari con "Esporta Parametri" e "Export Catalogo Excel".</p>
+            </div>
+            <div className="guide-footer">
+              <button className="tbtn primary" onClick={() => setShowGuideModal(false)}>Chiudi</button>
             </div>
           </div>
         </div>
