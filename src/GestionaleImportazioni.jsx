@@ -313,6 +313,14 @@ export default function GestionaleImportazioni() {
   const [comparePanelOpen, setComparePanelOpen] = useState(false);
   const [compareItemIds, setCompareItemIds] = useState([]); // array di item.id agganciati
 
+  // ===== SIMULAZIONE SELEZIONE =====
+  // Parametri attivi nella simulazione della selezione (override su quelli del fornitore)
+  const [selSimParams, setSelSimParams] = useState(null); // null = usa fornitore
+  // Scenari salvati per la sessione: [{ name, params, totale, savedAt }]
+  const [selScenarios, setSelScenarios] = useState([]);
+  // Pannello simulazione aperto/chiuso
+  const [selSimPanelOpen, setSelSimPanelOpen] = useState(false);
+
   // ===== SIMULATORE WHAT-IF =====
   const [simulatorOpen, setSimulatorOpen] = useState(false);
   const [simulatorTarget, setSimulatorTarget] = useState(null); // { type: 'item'|'bolla', data: ... }
@@ -1300,6 +1308,133 @@ export default function GestionaleImportazioni() {
   const compareItems = useMemo(() => {
     return compareItemIds.map(id => allItems.find(it => it.id === id)).filter(Boolean);
   }, [compareItemIds, allItems]);
+
+  // ===== SCOMPOSIZIONE LIVE PER SELEZIONE =====
+  // Usa selSimParams se presente, altrimenti i parametri del fornitore di ogni articolo
+  const scomposizioneSelezione = useMemo(() => {
+    const result = {};
+    for (const it of selectedItems) {
+      let effParams;
+      if (selSimParams) {
+        // Modalità simulazione: uso i parametri attivi della sim
+        effParams = { ...selSimParams };
+      } else if (it.origine === 'CN') {
+        // Default: parametri del fornitore CN
+        const sp = supplierParams[it.supplierId];
+        effParams = (!sp || sp.useGlobal) ? chinaParams : { ...chinaParams, ...sp.params };
+      } else {
+        // Articolo EU: niente scomposizione completa (solo prezzoFinale)
+        continue;
+      }
+      const simItem = {
+        prezzoUsd: it.prezzoOriginale,
+        qty: it.qtyRichiesta || 1,
+        pfuFascia: it.pfuFascia || '7_15'
+      };
+      // Per la simulazione uso la qty totale come somma delle qty richieste
+      const qtyRif = parseFloat(effParams.qtyTotale) || selectedItems.reduce((s, x) => s + (x.qtyRichiesta || 1), 0);
+      result[it.id] = calcolaScomposizione(simItem, { ...effParams, qtyTotale: qtyRif });
+    }
+    return result;
+  }, [selectedItems, selSimParams, supplierParams, chinaParams]);
+
+  // Totali aggregati della selezione (con prezzo simulato se attivo)
+  const totaliSelezione = useMemo(() => {
+    let totFobEur = 0, totNolo = 0, totCif = 0, totDazio = 0, totIva = 0;
+    let totExtra = 0, totServizi = 0, totPfu = 0, totCosto = 0, totVendita = 0;
+    let totQty = 0;
+    for (const it of selectedItems) {
+      const qty = it.qtyRichiesta || 1;
+      totQty += qty;
+      const sc = scomposizioneSelezione[it.id];
+      if (sc) {
+        totFobEur += sc.fobEur * qty;
+        totNolo += sc.noloPerPezzo * qty;
+        totCif += sc.valoreStatistico * qty;
+        totDazio += sc.dazio * qty;
+        totIva += sc.iva * qty;
+        totExtra += sc.extraNoloPerPezzo * qty;
+        totServizi += sc.serviziIvaPerPezzo * qty;
+        totPfu += sc.pfuPezzo * qty;
+        totCosto += sc.costoFinale * qty;
+        totVendita += sc.prezzoVendita * qty;
+      } else {
+        // Articolo EU: uso prezzoFinale statico
+        const p = parseFloat(it.prezzoFinale) || 0;
+        totCosto += p * qty;
+        totVendita += p * qty;
+      }
+    }
+    const margine = totVendita - totCosto;
+    const marginePct = totCosto > 0 ? (margine / totCosto * 100) : 0;
+    return { totFobEur, totNolo, totCif, totDazio, totIva, totExtra, totServizi, totPfu, totCosto, totVendita, totQty, margine, marginePct };
+  }, [selectedItems, scomposizioneSelezione]);
+
+  // ===== HELPER SIMULAZIONE SELEZIONE =====
+  // Carica i parametri di un fornitore CN nella simulazione
+  const loadSupplierParamsToSim = (supplierId) => {
+    const sp = supplierParams[supplierId];
+    const params = (!sp || sp.useGlobal) ? { ...chinaParams } : { ...chinaParams, ...sp.params };
+    // Imposto qtyTotale dalla selezione
+    params.qtyTotale = selectedItems.reduce((s, x) => s + (x.qtyRichiesta || 1), 0);
+    setSelSimParams(params);
+    setSelSimPanelOpen(true);
+  };
+
+  // Reset simulazione (torna ai parametri originali del fornitore)
+  const resetSelSim = () => {
+    setSelSimParams(null);
+  };
+
+  // Aggiorna un parametro della simulazione
+  const updateSelSimParam = (key, value) => {
+    setSelSimParams(prev => prev ? { ...prev, [key]: value } : prev);
+  };
+
+  // Applica un preset nolo alla simulazione
+  const applyPresetToSelSim = (presetKey) => {
+    const preset = NOLO_PRESETS[presetKey];
+    if (!preset || !selSimParams) return;
+    setSelSimParams(prev => ({
+      ...prev,
+      noloMare: preset.noloMare,
+      fuelSurcharge: preset.fuelSurcharge,
+      ics2Usd: preset.ics2Usd,
+      ecaSurcharge: preset.ecaSurcharge,
+      noloPreset: presetKey
+    }));
+  };
+
+  // Salva lo scenario corrente per confronti
+  const saveScenario = () => {
+    if (!selSimParams) { alert('Attiva prima la simulazione cliccando "Carica da fornitore"'); return; }
+    const name = prompt('Nome scenario (es. "Cina 40\' HC", "HoChiMin 20\' base"):');
+    if (!name || !name.trim()) return;
+    setSelScenarios(prev => [...prev, {
+      id: 'scen_' + Date.now(),
+      name: name.trim(),
+      params: { ...selSimParams },
+      totali: { ...totaliSelezione },
+      savedAt: new Date().toISOString()
+    }]);
+  };
+
+  // Elimina uno scenario salvato
+  const deleteScenario = (id) => {
+    setSelScenarios(prev => prev.filter(s => s.id !== id));
+  };
+
+  // Carica uno scenario salvato
+  const loadScenario = (id) => {
+    const sc = selScenarios.find(s => s.id === id);
+    if (sc) setSelSimParams({ ...sc.params });
+  };
+
+  // Pulisce tutti gli scenari salvati
+  const clearScenarios = () => {
+    if (selScenarios.length === 0) return;
+    if (confirm('Eliminare tutti gli scenari salvati?')) setSelScenarios([]);
+  };
 
   // ===== TOTALE FILTRATO PER COLONNE NASCOSTE =====
   // Ricalcola il "totale visibile" di un articolo escludendo le voci nascoste
@@ -2768,11 +2903,41 @@ export default function GestionaleImportazioni() {
         .compare-row.delta { background: #ffebee; padding: 3px 4px; margin-top: 2px; }
         .compare-row.delta .val { color: #c62828; font-weight: 700; }
         .compare-row.best-row { background: #c8e6c9; padding: 4px; margin-top: 2px; font-size: 11px; }
+
+        /* ===== SIMULAZIONE SELEZIONE ===== */
+        .sel-sim-panel { background: #fff8e1; border: 1px solid #ffb74d; margin: 6px 8px; }
+        .sel-sim-head { background: linear-gradient(to bottom, #ffcc80, #ffb74d); padding: 6px 10px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none; font-size: 12px; color: #bf360c; }
+        .sel-sim-head:hover { background: linear-gradient(to bottom, #ffd180, #ffb74d); }
+        .sel-sim-active { background: #2e7d32; color: #fff; padding: 1px 6px; border-radius: 2px; font-size: 9px; font-weight: 700; margin-left: 4px; }
+        .sel-sim-inactive { color: #5d4037; font-size: 10px; font-style: italic; margin-left: 4px; }
+        .sel-sim-body { padding: 8px; background: #fff; border-top: 1px solid #ffb74d; }
+        .sel-sim-load { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; padding-bottom: 8px; border-bottom: 1px solid #eceff1; margin-bottom: 8px; }
+        .sel-sim-params { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; padding: 4px 0; }
+        @media (max-width: 1400px) { .sel-sim-params { grid-template-columns: repeat(4, 1fr); } }
+        @media (max-width: 900px) { .sel-sim-params { grid-template-columns: repeat(2, 1fr); } }
+        .sel-sim-scenarios { display: flex; gap: 4px; padding: 8px 0 4px 0; border-top: 1px solid #eceff1; margin-top: 8px; }
+        .sel-sim-scen-table { background: #f5f7fa; padding: 4px; border: 1px solid #cfd8dc; }
+        .sel-sim-scen-table table { margin: 0; }
+
+        /* Riga totali in fondo a tabella selezione */
+        tr.sel-totals-row td { background: #eceff1; border-top: 2px solid #1976d2; font-size: 11px; padding: 6px 4px; }
+
+        /* KPI box riga */
+        .sel-kpi-row { display: flex; gap: 8px; padding: 8px; background: #f5f7fa; border-top: 1px solid #cfd8dc; flex-wrap: wrap; }
+        .sel-kpi-box { background: #fff; border: 1px solid #cfd8dc; padding: 8px 12px; flex: 1; min-width: 130px; display: flex; flex-direction: column; gap: 2px; }
+        .sel-kpi-box .lbl { font-size: 10px; color: #546e7a; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+        .sel-kpi-box .val { font-size: 16px; font-weight: 700; color: #263238; font-family: 'Consolas', monospace; }
+        .sel-kpi-box.cost { border-color: #1976d2; background: #e3f2fd; }
+        .sel-kpi-box.cost .val { color: #0d47a1; }
+        .sel-kpi-box.revenue { border-color: #2e7d32; background: #e8f5e9; }
+        .sel-kpi-box.revenue .val { color: #1b5e20; }
+        .sel-kpi-box.margin { border-color: #ff9800; background: #fff3e0; }
+        .sel-kpi-box.margin .val { color: #bf360c; }
       `}</style>
 
       {/* MENU BAR */}
       <div className="menubar" onMouseLeave={() => setOpenMenu(null)}>
-        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v2.0.1</div>
+        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v2.1</div>
 
         {/* ARCHIVIO */}
         <div className={`menubar-item ${openMenu === 'archivio' ? 'open' : ''}`} onClick={() => setOpenMenu(openMenu === 'archivio' ? null : 'archivio')}>
@@ -3382,57 +3547,235 @@ export default function GestionaleImportazioni() {
           {/* ===== SELEZIONE ===== */}
           {activeSection === 'selezione' && (
             <div className="window">
-              <div className="window-title"><span>Selezione Corrente</span><span className="breadcrumb">Home › Selezione</span></div>
+              <div className="window-title">
+                <span>Selezione Corrente — Foglio di Lavoro Vivo</span>
+                <span className="breadcrumb">Home › Selezione</span>
+              </div>
               {selectedItems.length === 0 ? (
-                <div className="empty"><div className="em-ttl">Nessun articolo selezionato</div>Accedere al Catalogo e cliccare sulle righe.</div>
+                <div className="empty"><div className="em-ttl">Nessun articolo selezionato</div>Accedere al Catalogo e cliccare sulle righe (oppure cliccare ⊕ per aggiungere al confronto).</div>
               ) : (
                 <>
+                  {/* ===== PANNELLO SIMULAZIONE ===== */}
+                  <div className="sel-sim-panel">
+                    <div className="sel-sim-head" onClick={() => setSelSimPanelOpen(!selSimPanelOpen)}>
+                      <span>⚙️ <b>Simulazione Selezione</b> {selSimParams ? <span className="sel-sim-active">ATTIVA</span> : <span className="sel-sim-inactive">non attiva (uso parametri di ogni fornitore)</span>}</span>
+                      <span style={{ fontSize: 11 }}>{selSimPanelOpen ? '▼ chiudi' : '▶ apri'}</span>
+                    </div>
+                    {selSimPanelOpen && (
+                      <div className="sel-sim-body">
+                        {/* Bottoni "carica da fornitore" */}
+                        <div className="sel-sim-load">
+                          <span style={{ fontSize: 11, fontWeight: 600, color: '#0d47a1' }}>📥 Carica parametri da:</span>
+                          {suppliers.filter(s => s.origine === 'CN').map(s => (
+                            <button key={s.id} className="tbtn" onClick={() => loadSupplierParamsToSim(s.id)} style={{ fontSize: 10 }}>
+                              🇨🇳 {s.name}
+                            </button>
+                          ))}
+                          <button className="tbtn" onClick={() => { setSelSimParams({ ...chinaParams, qtyTotale: selectedItems.reduce((s, x) => s + (x.qtyRichiesta || 1), 0) }); setSelSimPanelOpen(true); }} style={{ fontSize: 10 }}>
+                            🌐 Globali
+                          </button>
+                          {selSimParams && <button className="tbtn danger" onClick={resetSelSim} style={{ fontSize: 10 }}>↺ Reset (usa fornitore)</button>}
+                        </div>
+
+                        {/* Parametri editabili (visibile solo se sim attiva) */}
+                        {selSimParams && (
+                          <>
+                            <div className="sel-sim-params">
+                              <div className="sup-fld">
+                                <label>Rotta/Container</label>
+                                <select className="ctl" value={selSimParams.noloPreset || 'hcm_40'} onChange={e => applyPresetToSelSim(e.target.value)}>
+                                  {Object.entries(NOLO_PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                                </select>
+                              </div>
+                              <div className="sup-fld"><label>Cambio €/$</label><input className="ctl" type="number" step="0.0001" value={selSimParams.tassoEurUsd} onChange={e => updateSelSimParam('tassoEurUsd', parseFloat(e.target.value) || 1)} /></div>
+                              <div className="sup-fld"><label>Qty rif.</label><input className="ctl" type="number" value={selSimParams.qtyTotale} onChange={e => updateSelSimParam('qtyTotale', parseInt(e.target.value) || 0)} /></div>
+                              <div className="sup-fld"><label>Nolo $</label><input className="ctl" type="number" value={selSimParams.noloMare} onChange={e => updateSelSimParam('noloMare', parseFloat(e.target.value) || 0)} /></div>
+                              <div className="sup-fld"><label>Fuel mare €</label><input className="ctl" type="number" value={selSimParams.fuelSurcharge} onChange={e => updateSelSimParam('fuelSurcharge', parseFloat(e.target.value) || 0)} /></div>
+                              <div className="sup-fld"><label>THC €</label><input className="ctl" type="number" value={selSimParams.costiSbarco} onChange={e => updateSelSimParam('costiSbarco', parseFloat(e.target.value) || 0)} /></div>
+                              <div className="sup-fld"><label>Dogana €</label><input className="ctl" type="number" value={selSimParams.doganaImport} onChange={e => updateSelSimParam('doganaImport', parseFloat(e.target.value) || 0)} /></div>
+                              <div className="sup-fld"><label>Trasp. int. €</label><input className="ctl" type="number" value={selSimParams.trasportoInterno} onChange={e => updateSelSimParam('trasportoInterno', parseFloat(e.target.value) || 0)} /></div>
+                              <div className="sup-fld"><label>Dazio %</label><input className="ctl" type="number" step="0.1" value={selSimParams.dazioPct} onChange={e => updateSelSimParam('dazioPct', parseFloat(e.target.value) || 0)} /></div>
+                              <div className="sup-fld"><label>IVA %</label><input className="ctl" type="number" step="0.5" value={selSimParams.ivaPct} onChange={e => updateSelSimParam('ivaPct', parseFloat(e.target.value) || 0)} /></div>
+                              <div className="sup-fld"><label>Markup ×</label><input className="ctl" type="number" step="0.05" value={selSimParams.markup} onChange={e => updateSelSimParam('markup', parseFloat(e.target.value) || 1)} /></div>
+                              <div className="sup-fld"><label>Aggiust. €</label><input className="ctl" type="number" step="0.5" value={selSimParams.aggiustamento} onChange={e => updateSelSimParam('aggiustamento', parseFloat(e.target.value) || 0)} /></div>
+                            </div>
+
+                            {/* Salva scenario + scenari salvati */}
+                            <div className="sel-sim-scenarios">
+                              <button className="tbtn primary" onClick={saveScenario} style={{ fontSize: 10 }}>
+                                💾 Salva scenario corrente
+                              </button>
+                              {selScenarios.length > 0 && (
+                                <button className="tbtn" onClick={clearScenarios} style={{ fontSize: 10 }}>
+                                  <X size={11} /> Cancella tutti gli scenari ({selScenarios.length})
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Tabella confronto scenari */}
+                            {selScenarios.length > 0 && (
+                              <div className="sel-sim-scen-table">
+                                <table className="grid compact">
+                                  <thead>
+                                    <tr>
+                                      <th>Scenario</th>
+                                      <th className="num">Cambio</th>
+                                      <th className="num">Nolo $</th>
+                                      <th className="num">Dazio %</th>
+                                      <th className="num">Costo Tot.</th>
+                                      <th className="num">Vendita Tot.</th>
+                                      <th className="num">Δ vs corrente</th>
+                                      <th></th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {selScenarios.map(sc => {
+                                      const delta = sc.totali.totCosto - totaliSelezione.totCosto;
+                                      const deltaPct = totaliSelezione.totCosto > 0 ? (delta / totaliSelezione.totCosto * 100) : 0;
+                                      return (
+                                        <tr key={sc.id}>
+                                          <td><b>{sc.name}</b></td>
+                                          <td className="num">{sc.params.tassoEurUsd?.toFixed(4) || '—'}</td>
+                                          <td className="num">{fmtEur(sc.params.noloMare)}</td>
+                                          <td className="num">{sc.params.dazioPct}%</td>
+                                          <td className="num"><b>€ {fmtEur(sc.totali.totCosto)}</b></td>
+                                          <td className="num"><b>€ {fmtEur(sc.totali.totVendita)}</b></td>
+                                          <td className="num" style={{ color: delta < 0 ? '#1b5e20' : (delta > 0 ? '#c62828' : '#546e7a'), fontWeight: 700 }}>
+                                            {delta >= 0 ? '+' : ''}{fmtEur(delta)} € ({deltaPct >= 0 ? '+' : ''}{deltaPct.toFixed(1)}%)
+                                          </td>
+                                          <td>
+                                            <button className="tbtn" onClick={() => loadScenario(sc.id)} style={{ fontSize: 9, padding: '1px 4px' }}>↻ Carica</button>
+                                            <button className="tbtn danger" onClick={() => deleteScenario(sc.id)} style={{ fontSize: 9, padding: '1px 4px', marginLeft: 2 }}><X size={9} /></button>
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ===== TABELLA SCOMPOSTA ===== */}
                   <div className="grid-wrap">
-                    <table className="grid">
+                    <table className="grid scomposto">
                       <thead>
                         <tr>
-                          <th>Orig.</th><th>Marca</th><th>Modello</th><th>Misura</th><th>Fornitore</th>
-                          <th className="num">P.Unit.</th><th className="num" style={{ width: 70 }}>Q.tà</th>
-                          <th className="num">Totale</th><th style={{ width: 32 }}></th>
+                          <th>Orig.</th>
+                          <th>Marca</th>
+                          <th>Misura</th>
+                          <th>Fornitore</th>
+                          <th className="num" style={{ width: 60 }}>Q.tà</th>
+                          <th className="num">P.Orig.</th>
+                          <th className="num col-cn">FOB €</th>
+                          <th className="num col-cn">Nolo €</th>
+                          <th className="num col-cn">CIF €</th>
+                          <th className="num col-cn">Dazio €</th>
+                          <th className="num col-cn">IVA €</th>
+                          <th className="num col-cn col-extra">Extra €</th>
+                          <th className="num col-cn col-extra">Servizi €</th>
+                          <th className="num">PFU €</th>
+                          <th className="num col-finale">Costo /pz</th>
+                          <th className="num col-finale">Subtotale</th>
+                          <th className="num col-finale">Vendita /pz</th>
+                          <th className="num col-finale">Vend. tot.</th>
+                          <th style={{ width: 32 }}></th>
                         </tr>
                       </thead>
                       <tbody>
-                        {selectedItems.map(item => (
-                          <tr key={item.id}>
-                            <td><span className={`tag-origine ${item.origine}`}>{item.origine}</span></td>
-                            <td style={{ fontWeight: 600 }}>{item.marca}</td>
-                            <td>{item.modello || '—'}</td>
-                            <td><span className="tag-mis">{item.misura || '—'}</span></td>
-                            <td><span className="tag-sup">{item.supplierName}</span></td>
-                            <td className="num price-final">€ {fmtEur(item.prezzoFinale)}</td>
-                            <td className="num">
-                              <input type="number" min="1" className="qty-inp" value={item.qtyRichiesta} onChange={e => updateSelectedQty(item.id, e.target.value)} />
-                            </td>
-                            <td className="num price-final">€ {fmtEur(item.prezzoFinale * item.qtyRichiesta)}</td>
-                            <td style={{ textAlign: 'center' }}>
-                              <button className="tbtn danger" style={{ padding: '2px 6px', height: 22 }} onClick={() => removeSelected(item.id)}><X size={11} /></button>
-                            </td>
-                          </tr>
-                        ))}
+                        {selectedItems.map(item => {
+                          const sc = scomposizioneSelezione[item.id];
+                          const qty = item.qtyRichiesta || 1;
+                          const costoUnit = sc ? sc.costoFinale : (parseFloat(item.prezzoFinale) || 0);
+                          const venditaUnit = sc ? sc.prezzoVendita : costoUnit;
+                          return (
+                            <tr key={item.id}>
+                              <td><span className={`tag-origine ${item.origine}`}>{item.origine}</span></td>
+                              <td style={{ fontWeight: 600 }}>{item.marca} {item.modello && <span style={{ color: '#90a4ae', fontWeight: 400 }}>· {item.modello}</span>}</td>
+                              <td><span className="tag-mis">{item.misura || '—'}</span></td>
+                              <td><span className="tag-sup">{item.supplierName}</span></td>
+                              <td className="num">
+                                <input type="number" min="1" className="qty-inp" value={qty} onChange={e => updateSelectedQty(item.id, e.target.value)} />
+                              </td>
+                              <td className="num price-orig">{fmtEur(item.prezzoOriginale)}{item.currency !== 'EUR' && <span className="tag-cur">{item.currency}</span>}</td>
+                              <td className="num col-cn">{sc ? fmtEur(sc.fobEur) : '—'}</td>
+                              <td className="num col-cn">{sc ? fmtEur(sc.noloPerPezzo) : '—'}</td>
+                              <td className="num col-cn col-cif">{sc ? <b>{fmtEur(sc.valoreStatistico)}</b> : '—'}</td>
+                              <td className="num col-cn">{sc ? fmtEur(sc.dazio) : '—'}</td>
+                              <td className="num col-cn">{sc ? fmtEur(sc.iva) : '—'}</td>
+                              <td className="num col-cn col-extra">{sc ? fmtEur(sc.extraNoloPerPezzo) : '—'}</td>
+                              <td className="num col-cn col-extra">{sc ? fmtEur(sc.serviziIvaPerPezzo) : '—'}</td>
+                              <td className="num">{fmtEur(sc ? sc.pfuPezzo : item.pfu)}</td>
+                              <td className="num col-finale price-final">€ {fmtEur(costoUnit)}</td>
+                              <td className="num col-finale price-final">€ {fmtEur(costoUnit * qty)}</td>
+                              <td className="num col-finale" style={{ color: '#2e7d32' }}>€ {fmtEur(venditaUnit)}</td>
+                              <td className="num col-finale" style={{ color: '#2e7d32', fontWeight: 700 }}>€ {fmtEur(venditaUnit * qty)}</td>
+                              <td style={{ textAlign: 'center' }}>
+                                <button className="tbtn danger" style={{ padding: '2px 6px', height: 22 }} onClick={() => removeSelected(item.id)}><X size={11} /></button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {/* RIGA TOTALI */}
+                        <tr className="sel-totals-row">
+                          <td colSpan="4" style={{ textAlign: 'right', fontWeight: 700 }}>TOTALI ORDINE →</td>
+                          <td className="num"><b>{totaliSelezione.totQty}</b></td>
+                          <td colSpan="1"></td>
+                          <td className="num col-cn"><b>{fmtEur(totaliSelezione.totFobEur)}</b></td>
+                          <td className="num col-cn"><b>{fmtEur(totaliSelezione.totNolo)}</b></td>
+                          <td className="num col-cn col-cif"><b>{fmtEur(totaliSelezione.totCif)}</b></td>
+                          <td className="num col-cn"><b>{fmtEur(totaliSelezione.totDazio)}</b></td>
+                          <td className="num col-cn"><b>{fmtEur(totaliSelezione.totIva)}</b></td>
+                          <td className="num col-cn col-extra"><b>{fmtEur(totaliSelezione.totExtra)}</b></td>
+                          <td className="num col-cn col-extra"><b>{fmtEur(totaliSelezione.totServizi)}</b></td>
+                          <td className="num"><b>{fmtEur(totaliSelezione.totPfu)}</b></td>
+                          <td className="num col-finale" colSpan="2" style={{ background: '#1976d2', color: '#fff' }}><b>COSTO: € {fmtEur(totaliSelezione.totCosto)}</b></td>
+                          <td className="num col-finale" colSpan="2" style={{ background: '#2e7d32', color: '#fff' }}><b>VENDITA: € {fmtEur(totaliSelezione.totVendita)}</b></td>
+                          <td></td>
+                        </tr>
                       </tbody>
                     </table>
                   </div>
+
+                  {/* ===== KPI MARGINE ===== */}
+                  <div className="sel-kpi-row">
+                    <div className="sel-kpi-box">
+                      <span className="lbl">Pezzi totali</span>
+                      <span className="val">{totaliSelezione.totQty}</span>
+                    </div>
+                    <div className="sel-kpi-box">
+                      <span className="lbl">Costo medio /pz</span>
+                      <span className="val">€ {fmtEur(totaliSelezione.totQty > 0 ? totaliSelezione.totCosto / totaliSelezione.totQty : 0)}</span>
+                    </div>
+                    <div className="sel-kpi-box cost">
+                      <span className="lbl">Costo totale ordine</span>
+                      <span className="val">€ {fmtEur(totaliSelezione.totCosto)}</span>
+                    </div>
+                    <div className="sel-kpi-box revenue">
+                      <span className="lbl">Vendita totale</span>
+                      <span className="val">€ {fmtEur(totaliSelezione.totVendita)}</span>
+                    </div>
+                    <div className="sel-kpi-box margin">
+                      <span className="lbl">Margine</span>
+                      <span className="val">€ {fmtEur(totaliSelezione.margine)} ({totaliSelezione.marginePct.toFixed(1)}%)</span>
+                    </div>
+                  </div>
+
+                  {/* CTA Bolla doganale */}
                   {selectedItems.filter(i => i.origine === 'CN').length > 0 && (
                     <div style={{ background: '#ffebee', border: '1px solid #ef9a9a', padding: 10, margin: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
                       <div style={{ fontSize: 12, color: '#b71c1c' }}>
-                        <b>📄 {selectedItems.filter(i => i.origine === 'CN').length} articoli Cina selezionati</b> — {selectedItems.filter(i => i.origine === 'CN').reduce((s, i) => s + i.qtyRichiesta, 0)} pezzi totali. Pronto per generare la bolla doganale DAU con i calcoli reali (nolo, dogana, IVA).
+                        <b>📄 {selectedItems.filter(i => i.origine === 'CN').length} articoli Cina selezionati</b> — Pronto per generare la bolla doganale DAU.
                       </div>
                       <button className="tbtn china" onClick={openBollaFromSelection} style={{ fontWeight: 700 }}>
                         <FileText size={13} /> Genera Bolla Doganale ▸
                       </button>
                     </div>
                   )}
-                  <div className="statusbar">
-                    <div className="sb-item">Referenze: <b>{selectedItems.length}</b></div>
-                    <div className="sb-item">Pezzi tot: <b>{qtyTotale}</b></div>
-                    <div className="sb-item">Prezzo medio: <b>€ {fmtEur(qtyTotale > 0 ? totaleSelezione / qtyTotale : 0)}</b></div>
-                    <div className="sb-item">TOTALE: <span className="total">€ {fmtEur(totaleSelezione)}</span></div>
-                  </div>
                 </>
               )}
             </div>
