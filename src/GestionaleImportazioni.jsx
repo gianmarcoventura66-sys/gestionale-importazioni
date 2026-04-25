@@ -8,6 +8,63 @@ const _fmtE = (n) => {
   return num.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 };
 
+// === HELPER MISURE PNEUMATICI ===
+// Estrae i 3 numeri chiave (larghezza, spalla, diametro) da una stringa misura
+// Funziona con: 205/55R16, 205/55 R16, 205/55r16, 205-55-16, 2055516, "205 55 16", ecc.
+function parseMisura(raw) {
+  if (!raw) return null;
+  const s = String(raw).toUpperCase().trim();
+  // Tentativo 1: pattern standard XXX/YY*ZZ con qualsiasi separatore
+  let m = s.match(/(\d{3})\s*[\/\-\.\s]?\s*(\d{2})\s*[\/\-\.\sRZF]*\s*(\d{2})/);
+  if (m) {
+    return { width: parseInt(m[1]), aspect: parseInt(m[2]), rim: parseInt(m[3]) };
+  }
+  // Tentativo 2: stringa di soli numeri "2055516" (3+2+2 = 7 cifre)
+  const onlyDigits = s.replace(/\D/g, '');
+  if (onlyDigits.length === 7) {
+    return { width: parseInt(onlyDigits.slice(0, 3)), aspect: parseInt(onlyDigits.slice(3, 5)), rim: parseInt(onlyDigits.slice(5, 7)) };
+  }
+  // 6 cifre? potrebbe essere XXX/YY/ZZ con larghezza < 200 (es 165/65 R14 → 1656514)
+  if (onlyDigits.length === 6) {
+    // ambiguo; non risolviamo
+    return null;
+  }
+  return null;
+}
+
+// Forma normalizzata univoca per ricerca: solo cifre 7-digit (205551 6)
+function normalizeMisuraForSearch(raw) {
+  const p = parseMisura(raw);
+  if (!p) return String(raw || '').toUpperCase().replace(/\s+/g, '');
+  // Padding: width 3 cifre, aspect 2, rim 2
+  const w = String(p.width).padStart(3, '0');
+  const a = String(p.aspect).padStart(2, '0');
+  const r = String(p.rim).padStart(2, '0');
+  return w + a + r;
+}
+
+// Forma display standard: "205/55 R16"
+function formatMisuraDisplay(raw) {
+  if (!raw) return '';
+  const s = String(raw).toUpperCase().trim();
+  const p = parseMisura(s);
+  if (!p) return s;
+  const base = `${p.width}/${p.aspect} R${p.rim}`;
+  // Mantengo eventuali indicatori extra dopo la misura (es. 91V, XL, *, 87H ecc.)
+  // Cerco quello che sta dopo l'ultimo numero del rim
+  const rimStr = String(p.rim);
+  const idxAfter = s.lastIndexOf(rimStr);
+  if (idxAfter >= 0) {
+    let extra = s.substring(idxAfter + rimStr.length).trim();
+    // Pulisco caratteri di separazione iniziali
+    extra = extra.replace(/^[\s\-\/]+/, '').trim();
+    if (extra && extra.length <= 12) {
+      return base + ' ' + extra;
+    }
+  }
+  return base;
+}
+
 // === COMPONENTI SIMULATORE ===
 function SimInputGroup({ title, children }) {
   return (
@@ -245,6 +302,12 @@ export default function GestionaleImportazioni() {
   // Colonne nascoste nel catalogo
   const [hiddenColumns, setHiddenColumns] = useState([]);
   const [columnMenuFor, setColumnMenuFor] = useState(null);
+
+  // ===== EDIT ARTICOLO =====
+  // Modale completa per modifica articolo
+  const [editingItem, setEditingItem] = useState(null);
+  // Inline editing: { itemId, field } per evidenziare la cella in editing
+  const [inlineEdit, setInlineEdit] = useState(null);
 
   // ===== SIMULATORE WHAT-IF =====
   const [simulatorOpen, setSimulatorOpen] = useState(false);
@@ -567,16 +630,21 @@ export default function GestionaleImportazioni() {
       if (isNaN(prezzoNum) || prezzoNum <= 0) continue;
       const prezzoEur = mapping.currency === 'USD' ? prezzoNum * exchangeRate : prezzoNum;
       const prezzoFinale = prezzoEur + pfu + trasportoPerUnit;
+      const misuraRaw = misIdx >= 0 ? String(row[misIdx] || '').trim() : '';
+      const misuraDisplay = formatMisuraDisplay(misuraRaw);
+      const misuraNorm = normalizeMisuraForSearch(misuraRaw);
       items.push({
         id: supplierId + '_' + i, supplierId, supplierName: supplierName.trim(),
         origine: 'EU',
         marca: String(row[mIdx] || '').trim(),
         modello: modIdx >= 0 ? String(row[modIdx] || '').trim() : '',
-        misura: misIdx >= 0 ? String(row[misIdx] || '').trim() : '',
+        misura: misuraDisplay,
+        misuraNorm,
         prezzoOriginale: prezzoNum, currency: mapping.currency,
         prezzoEur: Math.round(prezzoEur * 100) / 100,
         pfu, trasportoPerUnit: Math.round(trasportoPerUnit * 100) / 100,
-        prezzoFinale: Math.round(prezzoFinale * 100) / 100
+        prezzoFinale: Math.round(prezzoFinale * 100) / 100,
+        qtyDisponibile: qty || 0
       });
     }
 
@@ -703,11 +771,15 @@ export default function GestionaleImportazioni() {
       const dazioStimato = prezzoEurBase * (p.dazioPct / 100);
       const ivaStimata = (prezzoEurBase + dazioStimato) * (p.ivaPct / 100);
       const prezzoStimato = prezzoEurBase + dazioStimato + ivaStimata + pfuPezzo;
+      const misuraDisplay = formatMisuraDisplay(item.misura);
+      const misuraNorm = normalizeMisuraForSearch(item.misura);
       return {
         id: supplierId + '_' + i, supplierId, supplierName: p.fornitore,
         origine: 'CN',
         marca: item.marca || p.fornitore,
-        modello: item.modello, misura: item.misura,
+        modello: item.modello,
+        misura: misuraDisplay,
+        misuraNorm,
         prezzoOriginale: item.prezzoUsd, currency: 'USD',
         prezzoEur: Math.round(prezzoEurBase * 100) / 100,
         pfu: Math.round(pfuPezzo * 100) / 100,
@@ -1165,6 +1237,47 @@ export default function GestionaleImportazioni() {
   const showAllColumns = () => setHiddenColumns([]);
   const hideAllExtraColumns = () => setHiddenColumns(['fobEur', 'noloPerPezzo', 'aggPerPezzo', 'valoreStatistico', 'dazio', 'tassePerPezzo', 'iva', 'extraNoloPerPezzo', 'serviziIvaPerPezzo', 'commissioniPerPezzo', 'pfu']);
 
+  // ===== MODIFICA ARTICOLO =====
+  // Aggiorna un singolo campo di un articolo (per editing inline)
+  const updateItemField = (itemId, field, value) => {
+    setAllItems(prev => prev.map(it => it.id === itemId ? { ...it, [field]: value } : it));
+  };
+
+  // Salva l'articolo modificato dalla modale completa
+  const saveEditingItem = () => {
+    if (!editingItem) return;
+    // Ricalcolo fascia PFU se la misura è cambiata
+    let pfuFascia = editingItem.pfuFascia || '7_15';
+    const m = (editingItem.misura || '').match(/R(\d+)/i);
+    if (m) {
+      const p = parseInt(m[1]);
+      if (p <= 14) pfuFascia = 'fino7';
+      else if (p <= 17) pfuFascia = '7_15';
+      else if (p <= 21) pfuFascia = '15_30';
+      else pfuFascia = '30_60';
+    }
+    // Normalizzo la misura (la salvo nel formato display, e la cifra normalizzata in misuraNorm)
+    const misuraDisplay = formatMisuraDisplay(editingItem.misura);
+    const misuraNorm = normalizeMisuraForSearch(editingItem.misura);
+    setAllItems(prev => prev.map(it => it.id === editingItem.id ? {
+      ...it,
+      marca: editingItem.marca,
+      modello: editingItem.modello,
+      misura: misuraDisplay,
+      misuraNorm,
+      prezzoOriginale: parseFloat(editingItem.prezzoOriginale) || 0,
+      qtyDisponibile: parseInt(editingItem.qtyDisponibile) || 0,
+      pfu: parseFloat(editingItem.pfu) || it.pfu,
+      pfuFascia
+    } : it));
+    setEditingItem(null);
+  };
+
+  // Apre la modale di modifica
+  const openEditItemModal = (item) => {
+    setEditingItem({ ...item });
+  };
+
   // Calcola il prezzo finale per una misura del listino, dato un fornitore
   const getPrezzoListino = (misura, supplierId) => {
     const m = misura.toUpperCase().trim();
@@ -1349,11 +1462,23 @@ export default function GestionaleImportazioni() {
 
   const filteredItems = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
+    // Se la query sembra una misura, calcolo la versione normalizzata da confrontare
+    const qNorm = q ? normalizeMisuraForSearch(q) : '';
+    const isMisuraSearch = q && /\d/.test(q) && qNorm.length === 7 && /^\d+$/.test(qNorm);
     let list = allItems.filter(i => {
       // Filtro listino misure attivo
       if (activeSizeSet && activeSizeSet.size > 0) {
         const m = (i.misura || '').toUpperCase().trim();
-        if (!activeSizeSet.has(m)) return false;
+        const mNorm = normalizeMisuraForSearch(m);
+        // Verifica match con qualsiasi versione (display o normalizzata)
+        let inSet = activeSizeSet.has(m) || activeSizeSet.has(mNorm);
+        if (!inSet) {
+          // Confronto normalizzato
+          for (const s of activeSizeSet) {
+            if (normalizeMisuraForSearch(s) === mNorm) { inSet = true; break; }
+          }
+        }
+        if (!inSet) return false;
       }
       // Filtro tab attiva
       if (activeCatalogTab === 'eu' && i.origine !== 'EU') return false;
@@ -1363,7 +1488,17 @@ export default function GestionaleImportazioni() {
       if (filterSupplier && i.supplierId !== filterSupplier) return false;
       if (filterMarca && i.marca !== filterMarca) return false;
       if (!q) return true;
-      return i.marca.toLowerCase().includes(q) || (i.modello || '').toLowerCase().includes(q) || (i.misura || '').toLowerCase().includes(q);
+      // Ricerca testuale
+      const inMarca = i.marca.toLowerCase().includes(q);
+      const inModello = (i.modello || '').toLowerCase().includes(q);
+      const inMisura = (i.misura || '').toLowerCase().includes(q);
+      // Ricerca permissiva su misura: confronto la versione normalizzata
+      let inMisuraNorm = false;
+      if (isMisuraSearch) {
+        const itemNorm = i.misuraNorm || normalizeMisuraForSearch(i.misura || '');
+        inMisuraNorm = itemNorm.includes(qNorm) || qNorm.includes(itemNorm);
+      }
+      return inMarca || inModello || inMisura || inMisuraNorm;
     });
     list.sort((a, b) => {
       let av, bv;
@@ -2529,11 +2664,16 @@ export default function GestionaleImportazioni() {
         th.col-clickable:hover { background: rgba(255,255,255,0.15) !important; }
         th.col-clickable .hide-x { display: none; margin-left: 4px; color: #ffcdd2; font-weight: 700; }
         th.col-clickable:hover .hide-x { display: inline; }
+
+        /* Input inline edit nel catalogo */
+        .inline-edit-inp { width: 70px; height: 22px; border: 1px solid transparent; padding: 0 4px; font-size: 11px; font-family: 'Consolas', monospace; text-align: right; background: transparent; color: inherit; transition: background 0.15s, border-color 0.15s; }
+        .inline-edit-inp:hover { background: #fff9c4; border-color: #ffd54f; }
+        .inline-edit-inp:focus { background: #fff; border-color: #1976d2; outline: 1px solid #1976d2; }
       `}</style>
 
       {/* MENU BAR */}
       <div className="menubar" onMouseLeave={() => setOpenMenu(null)}>
-        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v1.8</div>
+        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v1.9</div>
 
         {/* ARCHIVIO */}
         <div className={`menubar-item ${openMenu === 'archivio' ? 'open' : ''}`} onClick={() => setOpenMenu(openMenu === 'archivio' ? null : 'archivio')}>
@@ -2953,7 +3093,8 @@ export default function GestionaleImportazioni() {
                           <th onClick={() => toggleSort('modello')}>Modello</th>
                           <th onClick={() => toggleSort('misura')}>Misura</th>
                           {activeCatalogTab === 'all' && <th>Fornitore</th>}
-                          <th className="num" onClick={() => toggleSort('prezzoOriginale')}>Prezzo Orig.</th>
+                          <th className="num" onClick={() => toggleSort('qtyDisponibile')} title="Quantità disponibile (editabile cliccando)">Q.tà</th>
+                          <th className="num" onClick={() => toggleSort('prezzoOriginale')} title="Prezzo originale (editabile cliccando)">Prezzo Orig.</th>
                           {/* Colonne scomposte — solo se stiamo mostrando CN */}
                           {activeCatalogTab !== 'eu' && <>
                             {!hiddenColumns.includes('fobEur') && <th className="num col-cn col-clickable" title="Click per nascondere · FOB EUR = USD / cambio" onClick={() => toggleColumnVisibility('fobEur')}>FOB € <span className="hide-x">×</span></th>}
@@ -2969,7 +3110,8 @@ export default function GestionaleImportazioni() {
                           </>}
                           {!hiddenColumns.includes('pfu') && <th className="num col-clickable" title="Click per nascondere · PFU" onClick={() => toggleColumnVisibility('pfu')}>PFU € <span className="hide-x">×</span></th>}
                           <th className="num col-finale" onClick={() => toggleSort('prezzoFinale')}>TOTALE €</th>
-                          <th style={{ width: 40, cursor: 'default' }}>🔍</th>
+                          <th style={{ width: 28, cursor: 'default' }} title="Modifica completa">✏️</th>
+                          <th style={{ width: 28, cursor: 'default' }} title="Simulatore">🔍</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2988,8 +3130,27 @@ export default function GestionaleImportazioni() {
                               <td>{item.modello || '—'}</td>
                               <td><span className="tag-mis">{item.misura || '—'}</span></td>
                               {activeCatalogTab === 'all' && <td><span className="tag-sup">{item.supplierName}</span></td>}
-                              <td className="num price-orig">
-                                {fmtEur(item.prezzoOriginale)}
+                              <td className="num" onClick={e => e.stopPropagation()}>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="2"
+                                  value={item.qtyDisponibile || 0}
+                                  onChange={e => updateItemField(item.id, 'qtyDisponibile', parseInt(e.target.value) || 0)}
+                                  className="inline-edit-inp"
+                                  title="Modifica quantità disponibile"
+                                />
+                              </td>
+                              <td className="num price-orig" onClick={e => e.stopPropagation()}>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={item.prezzoOriginale || 0}
+                                  onChange={e => updateItemField(item.id, 'prezzoOriginale', parseFloat(e.target.value) || 0)}
+                                  className="inline-edit-inp"
+                                  title="Modifica prezzo originale"
+                                />
                                 {item.currency !== 'EUR' && <span className="tag-cur">{item.currency}</span>}
                               </td>
                               {/* Colonne scomposte */}
@@ -3028,6 +3189,11 @@ export default function GestionaleImportazioni() {
                                 {item.lastBollaId && (
                                   <span title="Prezzo aggiornato con bolla reale" style={{ fontSize: 8, marginLeft: 4, background: '#e8f5e9', color: '#1b5e20', padding: '1px 4px', border: '1px solid #66bb6a', borderRadius: 2, fontWeight: 700 }}>REALE</span>
                                 )}
+                              </td>
+                              <td style={{ textAlign: 'center', padding: 2 }} onClick={e => e.stopPropagation()}>
+                                <button className="tbtn" onClick={() => openEditItemModal(item)} title="Modifica articolo (tutti i campi)" style={{ padding: '1px 5px', height: 20, fontSize: 10 }}>
+                                  ✏️
+                                </button>
                               </td>
                               <td style={{ textAlign: 'center', padding: 2 }} onClick={e => e.stopPropagation()}>
                                 <button className="tbtn" onClick={() => openSimulatorFromItem(item)} title="Apri simulatore What-If per vedere la scomposizione prezzo" style={{ padding: '1px 5px', height: 20, fontSize: 10 }}>
@@ -4326,6 +4492,70 @@ export default function GestionaleImportazioni() {
                   <Check size={12} /> Salva Modifiche {simulatorTarget.type === 'bolla' ? 'nella Bolla' : 'nei Parametri'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== MODALE MODIFICA ARTICOLO ===== */}
+      {editingItem && (
+        <div className="guide-overlay" onClick={() => setEditingItem(null)}>
+          <div className="guide-modal" style={{ maxWidth: 700 }} onClick={e => e.stopPropagation()}>
+            <div className="guide-header" style={{ background: 'linear-gradient(to bottom, #1976d2, #0d47a1)' }}>
+              <h2>✏️ Modifica Articolo</h2>
+              <button className="sim-close" onClick={() => setEditingItem(null)}>✕</button>
+            </div>
+            <div className="guide-body">
+              <div style={{ background: '#e3f2fd', padding: 8, marginBottom: 12, fontSize: 11, color: '#0d47a1' }}>
+                <b>Origine:</b> <span className={`tag-origine ${editingItem.origine}`}>{editingItem.origine}</span> &nbsp; <b>Fornitore:</b> {editingItem.supplierName} &nbsp; <b>ID:</b> <code style={{ fontSize: 10 }}>{editingItem.id}</code>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div className="fld">
+                  <label>Marca</label>
+                  <input className="ctl" value={editingItem.marca || ''} onChange={e => setEditingItem({ ...editingItem, marca: e.target.value })} />
+                </div>
+                <div className="fld">
+                  <label>Modello</label>
+                  <input className="ctl" value={editingItem.modello || ''} onChange={e => setEditingItem({ ...editingItem, modello: e.target.value })} />
+                </div>
+                <div className="fld">
+                  <label>Misura (formato libero, normalizzata in salvataggio)</label>
+                  <input className="ctl" value={editingItem.misura || ''} onChange={e => setEditingItem({ ...editingItem, misura: e.target.value })} placeholder="Es. 205/55R16 o 2055516" />
+                  {editingItem.misura && (
+                    <div style={{ fontSize: 10, color: '#546e7a', marginTop: 2 }}>
+                      → Salvata come: <b>{formatMisuraDisplay(editingItem.misura)}</b>
+                    </div>
+                  )}
+                </div>
+                <div className="fld">
+                  <label>Fascia PFU (auto-calcolata)</label>
+                  <select className="ctl" value={editingItem.pfuFascia || '7_15'} onChange={e => setEditingItem({ ...editingItem, pfuFascia: e.target.value })}>
+                    <option value="fino7">fino a 7" (fino R14)</option>
+                    <option value="7_15">7-15" (R14-R17)</option>
+                    <option value="15_30">15-30" (R17-R21)</option>
+                    <option value="30_60">30-60" (oltre R21)</option>
+                  </select>
+                </div>
+                <div className="fld">
+                  <label>Prezzo originale ({editingItem.currency || 'EUR'})</label>
+                  <input className="ctl" type="number" step="0.01" value={editingItem.prezzoOriginale || 0} onChange={e => setEditingItem({ ...editingItem, prezzoOriginale: parseFloat(e.target.value) || 0 })} />
+                </div>
+                <div className="fld">
+                  <label>Quantità disponibile</label>
+                  <input className="ctl" type="number" step="2" min="0" value={editingItem.qtyDisponibile || 0} onChange={e => setEditingItem({ ...editingItem, qtyDisponibile: parseInt(e.target.value) || 0 })} />
+                </div>
+                <div className="fld">
+                  <label>PFU € (override)</label>
+                  <input className="ctl" type="number" step="0.05" value={editingItem.pfu || 0} onChange={e => setEditingItem({ ...editingItem, pfu: parseFloat(e.target.value) || 0 })} />
+                </div>
+              </div>
+              <div style={{ marginTop: 12, padding: 8, background: '#fff8e1', fontSize: 11, color: '#bf360c' }}>
+                💡 La fascia PFU viene ricalcolata automaticamente dalla misura al salvataggio. Il prezzo finale verrà ricalcolato in base ai parametri del fornitore.
+              </div>
+            </div>
+            <div className="guide-footer" style={{ justifyContent: 'space-between' }}>
+              <button className="tbtn" onClick={() => setEditingItem(null)}>Annulla</button>
+              <button className="tbtn success" onClick={saveEditingItem}><Check size={12} /> Salva Modifiche</button>
             </div>
           </div>
         </div>
