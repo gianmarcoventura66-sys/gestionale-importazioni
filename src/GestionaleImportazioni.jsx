@@ -236,6 +236,16 @@ export default function GestionaleImportazioni() {
   // Struttura: { [supplierId]: { useGlobal: bool, params: {...} } }
   const [supplierParams, setSupplierParams] = useState({});
 
+  // ===== LISTINI MISURE =====
+  // Struttura: { id, name, items: [{ misura, percentuale }], qtyTotale, createdAt }
+  const [sizeLists, setSizeLists] = useState([]);
+  const [activeSizeListId, setActiveSizeListId] = useState(null);
+  const [showSizeListBuilder, setShowSizeListBuilder] = useState(false);
+  const [editingSizeList, setEditingSizeList] = useState(null);
+  // Colonne nascoste nel catalogo
+  const [hiddenColumns, setHiddenColumns] = useState([]);
+  const [columnMenuFor, setColumnMenuFor] = useState(null);
+
   // ===== SIMULATORE WHAT-IF =====
   const [simulatorOpen, setSimulatorOpen] = useState(false);
   const [simulatorTarget, setSimulatorTarget] = useState(null); // { type: 'item'|'bolla', data: ... }
@@ -480,6 +490,9 @@ export default function GestionaleImportazioni() {
       try { const cp = await window.storage.get('chinaParams'); if (cp) setChinaParams(prev => ({ ...prev, ...JSON.parse(cp.value) })); } catch (e) {}
       try { const cv = await window.storage.get('compactView'); if (cv) setCompactView(cv.value === 'true'); } catch (e) {}
       try { const sp = await window.storage.get('supplierParams'); if (sp) setSupplierParams(JSON.parse(sp.value)); } catch (e) {}
+      try { const sl = await window.storage.get('sizeLists'); if (sl) setSizeLists(JSON.parse(sl.value)); } catch (e) {}
+      try { const al = await window.storage.get('activeSizeListId'); if (al) setActiveSizeListId(al.value === 'null' ? null : al.value); } catch (e) {}
+      try { const hc = await window.storage.get('hiddenColumns'); if (hc) setHiddenColumns(JSON.parse(hc.value)); } catch (e) {}
       setLoading(false);
     })();
   }, []);
@@ -492,6 +505,9 @@ export default function GestionaleImportazioni() {
   useEffect(() => { if (!loading) window.storage.set('chinaParams', JSON.stringify(chinaParams)).catch(() => {}); }, [chinaParams, loading]);
   useEffect(() => { if (!loading) window.storage.set('compactView', String(compactView)).catch(() => {}); }, [compactView, loading]);
   useEffect(() => { if (!loading) window.storage.set('supplierParams', JSON.stringify(supplierParams)).catch(() => {}); }, [supplierParams, loading]);
+  useEffect(() => { if (!loading) window.storage.set('sizeLists', JSON.stringify(sizeLists)).catch(() => {}); }, [sizeLists, loading]);
+  useEffect(() => { if (!loading) window.storage.set('activeSizeListId', String(activeSizeListId)).catch(() => {}); }, [activeSizeListId, loading]);
+  useEffect(() => { if (!loading) window.storage.set('hiddenColumns', JSON.stringify(hiddenColumns)).catch(() => {}); }, [hiddenColumns, loading]);
 
   // Auto-ricalcola 9AJ quando cambiano le unità (solo se le unità sono > 0)
   useEffect(() => {
@@ -1029,6 +1045,234 @@ export default function GestionaleImportazioni() {
 
   const uniqueMarche = useMemo(() => Array.from(new Set(allItems.map(i => i.marca).filter(Boolean))).sort(), [allItems]);
 
+  // ===== HELPER LISTINI MISURE =====
+  // Arrotonda al pari più vicino (per gomme che si vendono in coppie)
+  const arrotondaAlPari = (n) => {
+    const r = Math.round(n);
+    return r % 2 === 0 ? r : r + 1;
+  };
+
+  // Calcola le quantità per ogni misura del listino in base alla qty totale
+  const calcolaQtyListino = (sizeList) => {
+    if (!sizeList || !sizeList.items) return [];
+    const qtyTot = parseInt(sizeList.qtyTotale) || 0;
+    if (qtyTot === 0) return sizeList.items.map(i => ({ ...i, qty: 0 }));
+    // Sommo percentuali per normalizzare se non fanno 100
+    const sommaPct = sizeList.items.reduce((s, i) => s + (parseFloat(i.percentuale) || 0), 0) || 1;
+    let result = sizeList.items.map(i => {
+      const pctNorm = (parseFloat(i.percentuale) || 0) / sommaPct;
+      const qtyRaw = qtyTot * pctNorm;
+      return { ...i, qty: arrotondaAlPari(qtyRaw) };
+    });
+    // Aggiusta la differenza arrotondamento sull'ultima riga (deve fare quadrare il totale)
+    const sommaQty = result.reduce((s, i) => s + i.qty, 0);
+    const diff = qtyTot - sommaQty;
+    if (diff !== 0 && result.length > 0) {
+      const lastIdx = result.length - 1;
+      const newQty = arrotondaAlPari(result[lastIdx].qty + diff);
+      result[lastIdx] = { ...result[lastIdx], qty: Math.max(0, newQty) };
+    }
+    return result;
+  };
+
+  // Crea un nuovo listino misure
+  const createSizeList = () => {
+    const name = prompt('Nome del listino (es. "Estive 2026"):');
+    if (!name || !name.trim()) return;
+    const newList = {
+      id: 'sl_' + Date.now(),
+      name: name.trim(),
+      qtyTotale: 500,
+      items: [],
+      createdAt: new Date().toISOString()
+    };
+    setSizeLists(prev => [...prev, newList]);
+    setActiveSizeListId(newList.id);
+    setEditingSizeList(newList);
+    setShowSizeListBuilder(true);
+  };
+
+  // Elimina un listino
+  const deleteSizeList = (id) => {
+    if (!confirm('Eliminare questo listino misure?')) return;
+    setSizeLists(prev => prev.filter(l => l.id !== id));
+    if (activeSizeListId === id) setActiveSizeListId(null);
+  };
+
+  // Aggiorna un listino esistente
+  const updateSizeList = (id, updates) => {
+    setSizeLists(prev => prev.map(l => l.id === id ? { ...l, ...updates } : l));
+  };
+
+  // Aggiunge una misura al listino in editing
+  const addSizeToList = (misura) => {
+    if (!editingSizeList) return;
+    const m = misura.trim().toUpperCase();
+    if (!m) return;
+    if (editingSizeList.items.some(i => i.misura === m)) {
+      alert('Misura già presente nel listino');
+      return;
+    }
+    const newItems = [...editingSizeList.items, { misura: m, percentuale: 0 }];
+    setEditingSizeList({ ...editingSizeList, items: newItems });
+  };
+
+  // Rimuove una misura dal listino in editing
+  const removeSizeFromList = (idx) => {
+    if (!editingSizeList) return;
+    const newItems = editingSizeList.items.filter((_, i) => i !== idx);
+    setEditingSizeList({ ...editingSizeList, items: newItems });
+  };
+
+  // Aggiorna percentuale o qty di una riga del listino
+  const updateSizeRow = (idx, key, value) => {
+    if (!editingSizeList) return;
+    const newItems = editingSizeList.items.map((it, i) => i === idx ? { ...it, [key]: value } : it);
+    setEditingSizeList({ ...editingSizeList, items: newItems });
+  };
+
+  // Salva il listino in editing
+  const saveEditingSizeList = () => {
+    if (!editingSizeList) return;
+    // Verifica somma percentuali
+    const somma = editingSizeList.items.reduce((s, i) => s + (parseFloat(i.percentuale) || 0), 0);
+    if (Math.abs(somma - 100) > 0.5 && editingSizeList.items.length > 0) {
+      if (!confirm(`Le percentuali sommano a ${somma.toFixed(1)}% (non 100%). Salvare comunque? Le quantità saranno calcolate proporzionalmente.`)) return;
+    }
+    updateSizeList(editingSizeList.id, {
+      name: editingSizeList.name,
+      qtyTotale: editingSizeList.qtyTotale,
+      items: editingSizeList.items
+    });
+    setShowSizeListBuilder(false);
+    setEditingSizeList(null);
+  };
+
+  // Listino attivo (oggetto)
+  const activeSizeList = useMemo(() => sizeLists.find(l => l.id === activeSizeListId) || null, [sizeLists, activeSizeListId]);
+
+  // Misure del listino attivo (Set per filtraggio veloce)
+  const activeSizeSet = useMemo(() => {
+    if (!activeSizeList) return null;
+    return new Set(activeSizeList.items.map(i => (i.misura || '').toUpperCase().trim()));
+  }, [activeSizeList]);
+
+  // ===== HELPER COLONNE NASCOSTE =====
+  const toggleColumnVisibility = (key) => {
+    setHiddenColumns(prev => prev.includes(key) ? prev.filter(c => c !== key) : [...prev, key]);
+    setColumnMenuFor(null);
+  };
+  const showAllColumns = () => setHiddenColumns([]);
+  const hideAllExtraColumns = () => setHiddenColumns(['fobEur', 'noloPerPezzo', 'aggPerPezzo', 'valoreStatistico', 'dazio', 'tassePerPezzo', 'iva', 'extraNoloPerPezzo', 'serviziIvaPerPezzo', 'commissioniPerPezzo', 'pfu']);
+
+  // Calcola il prezzo finale per una misura del listino, dato un fornitore
+  const getPrezzoListino = (misura, supplierId) => {
+    const m = misura.toUpperCase().trim();
+    const cands = allItems.filter(i => (i.misura || '').toUpperCase().trim() === m && (supplierId === 'all' || i.supplierId === supplierId));
+    if (cands.length === 0) return null;
+    // Per CN uso scomposizione live, per EU prezzoFinale statico, prendo il più economico
+    let best = null;
+    for (const c of cands) {
+      const p = c.origine === 'CN' && scomposizioneCatalogo[c.id] ? scomposizioneCatalogo[c.id].costoFinale : (parseFloat(c.prezzoFinale) || 0);
+      if (best === null || p < best.prezzo) {
+        best = { item: c, prezzo: p };
+      }
+    }
+    return best;
+  };
+
+  // Export listino misure in PDF (per inviarlo al fornitore)
+  const exportListinoPdf = (sizeList, supplierId = 'all') => {
+    if (!sizeList) return;
+    const rows = calcolaQtyListino(sizeList);
+    const win = window.open('', '_blank');
+    if (!win) { alert('Abilita popup'); return; }
+    const sup = suppliers.find(s => s.id === supplierId);
+    const titolo = sup ? `Richiesta ${sup.name}` : 'Richiesta Multi-Fornitore';
+    const dataStr = new Date().toLocaleDateString('it-IT');
+    let totale = 0;
+    const rowsHtml = rows.map((r, i) => {
+      const best = getPrezzoListino(r.misura, supplierId);
+      const prezzoUnit = best?.prezzo || 0;
+      const prezzoOrig = best?.item?.prezzoOriginale || 0;
+      const valuta = best?.item?.currency || 'EUR';
+      const subtot = prezzoUnit * r.qty;
+      totale += subtot;
+      return `<tr>
+        <td>${i + 1}</td>
+        <td><b>${r.misura}</b></td>
+        <td class="num">${r.percentuale}%</td>
+        <td class="num"><b>${r.qty}</b></td>
+        <td>${best?.item?.marca || '—'} ${best?.item?.modello || ''}</td>
+        <td class="num">${prezzoOrig ? valuta + ' ' + prezzoOrig.toFixed(2) : '—'}</td>
+        <td class="num"><b>€ ${prezzoUnit.toFixed(2)}</b></td>
+        <td class="num"><b>€ ${subtot.toFixed(2)}</b></td>
+      </tr>`;
+    }).join('');
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${titolo}</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 11px; color: #263238; padding: 10px; }
+  h1 { color: #0d47a1; border-bottom: 2px solid #0d47a1; padding-bottom: 6px; margin: 0 0 8px 0; }
+  .info { background: #e3f2fd; padding: 8px; margin-bottom: 12px; font-size: 11px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { background: #37474f; color: #fff; padding: 6px 8px; text-align: left; font-size: 11px; }
+  td { padding: 5px 8px; border-bottom: 1px solid #cfd8dc; }
+  tr:nth-child(even) td { background: #f5f7fa; }
+  .num { text-align: right; font-family: 'Consolas', monospace; }
+  .tot { background: #1976d2 !important; color: #fff; font-weight: bold; font-size: 13px; }
+  .tot td { color: #fff; }
+  .no-print-btn { position: fixed; bottom: 15px; right: 15px; background: #1976d2; color: #fff; border: none; padding: 10px 20px; cursor: pointer; font-weight: bold; }
+  @media print { .no-print-btn { display: none; } }
+</style></head><body>
+<h1>${titolo} — Listino "${sizeList.name}"</h1>
+<div class="info">
+  <b>Data:</b> ${dataStr} &nbsp;·&nbsp;
+  <b>Quantità totale:</b> ${sizeList.qtyTotale} pezzi &nbsp;·&nbsp;
+  <b>Misure richieste:</b> ${rows.length}
+</div>
+<table>
+  <thead>
+    <tr><th>#</th><th>Misura</th><th class="num">%</th><th class="num">Q.tà</th><th>Articolo</th><th class="num">Prezzo orig.</th><th class="num">Prezzo finito €</th><th class="num">Subtotale €</th></tr>
+  </thead>
+  <tbody>${rowsHtml}</tbody>
+  <tfoot>
+    <tr class="tot"><td colspan="3"></td><td class="num">${rows.reduce((s, r) => s + r.qty, 0)}</td><td colspan="3">TOTALE</td><td class="num">€ ${totale.toFixed(2)}</td></tr>
+  </tfoot>
+</table>
+<button class="no-print-btn" onclick="window.print()">🖨 STAMPA / SALVA PDF</button>
+</body></html>`;
+    win.document.write(html);
+    win.document.close();
+  };
+
+  // Export listino misure in Excel
+  const exportListinoExcel = (sizeList, supplierId = 'all') => {
+    if (!sizeList) return;
+    const rows = calcolaQtyListino(sizeList);
+    const wb = XLSX.utils.book_new();
+    const data = rows.map((r, i) => {
+      const best = getPrezzoListino(r.misura, supplierId);
+      return {
+        '#': i + 1,
+        'Misura': r.misura,
+        'Percentuale %': r.percentuale,
+        'Quantità': r.qty,
+        'Marca': best?.item?.marca || '',
+        'Modello': best?.item?.modello || '',
+        'Fornitore': best?.item?.supplierName || '',
+        'Prezzo originale': best?.item?.prezzoOriginale || '',
+        'Valuta': best?.item?.currency || '',
+        'Prezzo finito €': best?.prezzo || 0,
+        'Subtotale €': (best?.prezzo || 0) * r.qty
+      };
+    });
+    const ws = XLSX.utils.json_to_sheet(data);
+    ws['!cols'] = [{ wch: 5 }, { wch: 14 }, { wch: 12 }, { wch: 8 }, { wch: 14 }, { wch: 18 }, { wch: 18 }, { wch: 14 }, { wch: 8 }, { wch: 14 }, { wch: 14 }];
+    XLSX.utils.book_append_sheet(wb, ws, 'Listino');
+    XLSX.writeFile(wb, `listino_${sizeList.name.replace(/[^a-zA-Z0-9]/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
   // ===== GESTIONE PARAMETRI PER-FORNITORE =====
   // Ritorna i parametri effettivi di un fornitore (suoi o globali se useGlobal)
   const getEffectiveParams = (supplierId) => {
@@ -1106,6 +1350,11 @@ export default function GestionaleImportazioni() {
   const filteredItems = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
     let list = allItems.filter(i => {
+      // Filtro listino misure attivo
+      if (activeSizeSet && activeSizeSet.size > 0) {
+        const m = (i.misura || '').toUpperCase().trim();
+        if (!activeSizeSet.has(m)) return false;
+      }
       // Filtro tab attiva
       if (activeCatalogTab === 'eu' && i.origine !== 'EU') return false;
       if (activeCatalogTab !== 'all' && activeCatalogTab !== 'eu' && i.supplierId !== activeCatalogTab) return false;
@@ -1117,7 +1366,6 @@ export default function GestionaleImportazioni() {
       return i.marca.toLowerCase().includes(q) || (i.modello || '').toLowerCase().includes(q) || (i.misura || '').toLowerCase().includes(q);
     });
     list.sort((a, b) => {
-      // Per ordinare su prezzoFinale usa quello calcolato live (scomposizione) per CN
       let av, bv;
       if (sortBy.field === 'prezzoFinale' && a.origine === 'CN' && scomposizioneCatalogo[a.id]) {
         av = scomposizioneCatalogo[a.id].costoFinale;
@@ -1135,7 +1383,7 @@ export default function GestionaleImportazioni() {
       return 0;
     });
     return list;
-  }, [allItems, searchQuery, filterSupplier, filterMarca, filterOrigine, sortBy, activeCatalogTab, scomposizioneCatalogo]);
+  }, [allItems, searchQuery, filterSupplier, filterMarca, filterOrigine, sortBy, activeCatalogTab, scomposizioneCatalogo, activeSizeSet]);
 
   const totaleSelezione = useMemo(() => selectedItems.reduce((s, i) => s + i.prezzoFinale * i.qtyRichiesta, 0), [selectedItems]);
   const qtyTotale = useMemo(() => selectedItems.reduce((s, i) => s + i.qtyRichiesta, 0), [selectedItems]);
@@ -2276,11 +2524,16 @@ export default function GestionaleImportazioni() {
         table.grid.scomposto td.col-finale { background: #e8f5e9; font-weight: 700; color: #1b5e20; border-color: #a5d6a7; }
         table.grid.scomposto tr:hover td.col-cn { background: #e3f2fd; }
         table.grid.scomposto tr.selected td.col-cn { background: #bbdefb !important; }
+        /* Colonne cliccabili nascondibili */
+        th.col-clickable { cursor: pointer; user-select: none; position: relative; }
+        th.col-clickable:hover { background: rgba(255,255,255,0.15) !important; }
+        th.col-clickable .hide-x { display: none; margin-left: 4px; color: #ffcdd2; font-weight: 700; }
+        th.col-clickable:hover .hide-x { display: inline; }
       `}</style>
 
       {/* MENU BAR */}
       <div className="menubar" onMouseLeave={() => setOpenMenu(null)}>
-        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v1.7</div>
+        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v1.8</div>
 
         {/* ARCHIVIO */}
         <div className={`menubar-item ${openMenu === 'archivio' ? 'open' : ''}`} onClick={() => setOpenMenu(openMenu === 'archivio' ? null : 'archivio')}>
@@ -2343,6 +2596,9 @@ export default function GestionaleImportazioni() {
               </div>
               <div className={`menu-dd-item ${activeSection === 'fornitori' ? 'active' : ''}`} onClick={() => menuAction(() => setActiveSection('fornitori'))}>
                 <FolderOpen size={12} /> Fornitori <span className="menu-dd-badge">{suppliers.length}</span>
+              </div>
+              <div className={`menu-dd-item ${activeSection === 'sizelists' ? 'active' : ''}`} onClick={() => menuAction(() => setActiveSection('sizelists'))}>
+                <List size={12} /> Listini Misure <span className="menu-dd-badge">{sizeLists.length}</span>
               </div>
               <div className={`menu-dd-item ${activeSection === 'confronto' ? 'active' : ''}`} onClick={() => menuAction(() => setActiveSection('confronto'))}>
                 <Search size={12} /> Confronto Prezzi <span className="menu-dd-badge">{comparisonData.length}</span>
@@ -2451,6 +2707,9 @@ export default function GestionaleImportazioni() {
           </div>
           <div className={`sidenav-item ${activeSection === 'fornitori' ? 'active' : ''}`} onClick={() => setActiveSection('fornitori')}>
             <FolderOpen size={14} /> Fornitori <span className="badge">{suppliers.length}</span>
+          </div>
+          <div className={`sidenav-item ${activeSection === 'sizelists' ? 'active' : ''}`} onClick={() => setActiveSection('sizelists')}>
+            <List size={14} /> Listini Misure <span className="badge">{sizeLists.length}</span>
           </div>
           <div className={`sidenav-item ${activeSection === 'confronto' ? 'active' : ''}`} onClick={() => setActiveSection('confronto')}>
             <Search size={14} /> Confronto Prezzi <span className="badge">{comparisonData.length}</span>
@@ -2658,9 +2917,31 @@ export default function GestionaleImportazioni() {
                         <button className={`tbtn ${compactView ? 'primary' : ''}`} onClick={() => setCompactView(!compactView)} title="Alterna vista compatta/normale">
                           {compactView ? '≡ Normale' : '≡ Compatta'}
                         </button>
+                        {hiddenColumns.length > 0 && (
+                          <button className="tbtn" onClick={showAllColumns} title="Riporta tutte le colonne visibili" style={{ background: '#fff59d', borderColor: '#f57f17', color: '#bf360c' }}>
+                            👁 Mostra tutte ({hiddenColumns.length} nascoste)
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>
+
+                  {/* Banner listino attivo */}
+                  {activeSizeList && (
+                    <div style={{ background: '#fff8e1', border: '1px solid #ffb74d', padding: 8, margin: '0 8px 6px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                      <div style={{ fontSize: 12, color: '#bf360c' }}>
+                        🎯 <b>Listino attivo:</b> "{activeSizeList.name}" — il catalogo mostra solo le {activeSizeList.items.length} misure di questo listino. Trovati {filteredItems.length} articoli compatibili.
+                      </div>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <button className="tbtn" onClick={() => setActiveSection('sizelists')} style={{ fontSize: 10 }}>
+                          <Settings size={11} /> Gestisci listini
+                        </button>
+                        <button className="tbtn" onClick={() => setActiveSizeListId(null)} style={{ fontSize: 10 }}>
+                          <X size={11} /> Disattiva filtro
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="grid-wrap">
                     <table className={`grid ${compactView ? 'compact' : ''} ${activeCatalogTab !== 'eu' ? 'scomposto' : ''}`}>
@@ -2675,18 +2956,18 @@ export default function GestionaleImportazioni() {
                           <th className="num" onClick={() => toggleSort('prezzoOriginale')}>Prezzo Orig.</th>
                           {/* Colonne scomposte — solo se stiamo mostrando CN */}
                           {activeCatalogTab !== 'eu' && <>
-                            <th className="num col-cn" title="FOB EUR = USD / cambio">FOB €</th>
-                            <th className="num col-cn" title="Nolo marittimo per pezzo (ripartito)">Nolo €</th>
-                            <th className="num col-cn" title="Aggiustamento v.45 per pezzo">Aggiust €</th>
-                            <th className="num col-cn" title="Valore Statistico CIF = FOB + Nolo + Aggiust">CIF €</th>
-                            <th className="num col-cn" title="Dazio A00 (4,5%)">Dazio €</th>
-                            <th className="num col-cn" title="9AJ Diritto Marittimo per pezzo">9AJ €</th>
-                            <th className="num col-cn" title="IVA B00 (22%) su (CIF+Dazio+9AJ)">IVA €</th>
-                            <th className="num col-cn col-extra" title="Extra Nolo art.74 (THC, dogana, fuel) per pezzo">ExtraNolo €</th>
-                            <th className="num col-cn col-extra" title="Servizi con IVA (delivery, trasporto, fuel) per pezzo">Servizi €</th>
-                            <th className="num col-cn col-extra" title="Commissioni per pezzo">Comm €</th>
+                            {!hiddenColumns.includes('fobEur') && <th className="num col-cn col-clickable" title="Click per nascondere · FOB EUR = USD / cambio" onClick={() => toggleColumnVisibility('fobEur')}>FOB € <span className="hide-x">×</span></th>}
+                            {!hiddenColumns.includes('noloPerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere · Nolo per pezzo" onClick={() => toggleColumnVisibility('noloPerPezzo')}>Nolo € <span className="hide-x">×</span></th>}
+                            {!hiddenColumns.includes('aggPerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere · Aggiustamento v.45" onClick={() => toggleColumnVisibility('aggPerPezzo')}>Aggiust € <span className="hide-x">×</span></th>}
+                            {!hiddenColumns.includes('valoreStatistico') && <th className="num col-cn col-clickable" title="Click per nascondere · Valore Statistico CIF" onClick={() => toggleColumnVisibility('valoreStatistico')}>CIF € <span className="hide-x">×</span></th>}
+                            {!hiddenColumns.includes('dazio') && <th className="num col-cn col-clickable" title="Click per nascondere · Dazio A00 (4,5%)" onClick={() => toggleColumnVisibility('dazio')}>Dazio € <span className="hide-x">×</span></th>}
+                            {!hiddenColumns.includes('tassePerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere · 9AJ Diritto Marittimo" onClick={() => toggleColumnVisibility('tassePerPezzo')}>9AJ € <span className="hide-x">×</span></th>}
+                            {!hiddenColumns.includes('iva') && <th className="num col-cn col-clickable" title="Click per nascondere · IVA B00 (22%)" onClick={() => toggleColumnVisibility('iva')}>IVA € <span className="hide-x">×</span></th>}
+                            {!hiddenColumns.includes('extraNoloPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere · Extra Nolo art.74" onClick={() => toggleColumnVisibility('extraNoloPerPezzo')}>ExtraNolo € <span className="hide-x">×</span></th>}
+                            {!hiddenColumns.includes('serviziIvaPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere · Servizi con IVA" onClick={() => toggleColumnVisibility('serviziIvaPerPezzo')}>Servizi € <span className="hide-x">×</span></th>}
+                            {!hiddenColumns.includes('commissioniPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere · Commissioni" onClick={() => toggleColumnVisibility('commissioniPerPezzo')}>Comm € <span className="hide-x">×</span></th>}
                           </>}
-                          <th className="num">PFU €</th>
+                          {!hiddenColumns.includes('pfu') && <th className="num col-clickable" title="Click per nascondere · PFU" onClick={() => toggleColumnVisibility('pfu')}>PFU € <span className="hide-x">×</span></th>}
                           <th className="num col-finale" onClick={() => toggleSort('prezzoFinale')}>TOTALE €</th>
                           <th style={{ width: 40, cursor: 'default' }}>🔍</th>
                         </tr>
@@ -2714,31 +2995,31 @@ export default function GestionaleImportazioni() {
                               {/* Colonne scomposte */}
                               {activeCatalogTab !== 'eu' && <>
                                 {item.origine === 'CN' && sc ? <>
-                                  <td className="num col-cn">{fmtEur(sc.fobEur)}</td>
-                                  <td className="num col-cn">{fmtEur(sc.noloPerPezzo)}</td>
-                                  <td className="num col-cn">{fmtEur(sc.aggPerPezzo)}</td>
-                                  <td className="num col-cn col-cif"><b>{fmtEur(sc.valoreStatistico)}</b></td>
-                                  <td className="num col-cn">{fmtEur(sc.dazio)}</td>
-                                  <td className="num col-cn">{fmtEur(sc.tassePerPezzo)}</td>
-                                  <td className="num col-cn">{fmtEur(sc.iva)}</td>
-                                  <td className="num col-cn col-extra">{fmtEur(sc.extraNoloPerPezzo)}</td>
-                                  <td className="num col-cn col-extra">{fmtEur(sc.serviziIvaPerPezzo)}</td>
-                                  <td className="num col-cn col-extra">{fmtEur(sc.commissioniPerPezzo)}</td>
+                                  {!hiddenColumns.includes('fobEur') && <td className="num col-cn">{fmtEur(sc.fobEur)}</td>}
+                                  {!hiddenColumns.includes('noloPerPezzo') && <td className="num col-cn">{fmtEur(sc.noloPerPezzo)}</td>}
+                                  {!hiddenColumns.includes('aggPerPezzo') && <td className="num col-cn">{fmtEur(sc.aggPerPezzo)}</td>}
+                                  {!hiddenColumns.includes('valoreStatistico') && <td className="num col-cn col-cif"><b>{fmtEur(sc.valoreStatistico)}</b></td>}
+                                  {!hiddenColumns.includes('dazio') && <td className="num col-cn">{fmtEur(sc.dazio)}</td>}
+                                  {!hiddenColumns.includes('tassePerPezzo') && <td className="num col-cn">{fmtEur(sc.tassePerPezzo)}</td>}
+                                  {!hiddenColumns.includes('iva') && <td className="num col-cn">{fmtEur(sc.iva)}</td>}
+                                  {!hiddenColumns.includes('extraNoloPerPezzo') && <td className="num col-cn col-extra">{fmtEur(sc.extraNoloPerPezzo)}</td>}
+                                  {!hiddenColumns.includes('serviziIvaPerPezzo') && <td className="num col-cn col-extra">{fmtEur(sc.serviziIvaPerPezzo)}</td>}
+                                  {!hiddenColumns.includes('commissioniPerPezzo') && <td className="num col-cn col-extra">{fmtEur(sc.commissioniPerPezzo)}</td>}
                                 </> : <>
                                   {/* Articolo EU: colonne CN vuote */}
-                                  <td className="num col-cn">—</td>
-                                  <td className="num col-cn">—</td>
-                                  <td className="num col-cn">—</td>
-                                  <td className="num col-cn">—</td>
-                                  <td className="num col-cn">—</td>
-                                  <td className="num col-cn">—</td>
-                                  <td className="num col-cn">—</td>
-                                  <td className="num col-cn col-extra">—</td>
-                                  <td className="num col-cn col-extra">—</td>
-                                  <td className="num col-cn col-extra">—</td>
+                                  {!hiddenColumns.includes('fobEur') && <td className="num col-cn">—</td>}
+                                  {!hiddenColumns.includes('noloPerPezzo') && <td className="num col-cn">—</td>}
+                                  {!hiddenColumns.includes('aggPerPezzo') && <td className="num col-cn">—</td>}
+                                  {!hiddenColumns.includes('valoreStatistico') && <td className="num col-cn">—</td>}
+                                  {!hiddenColumns.includes('dazio') && <td className="num col-cn">—</td>}
+                                  {!hiddenColumns.includes('tassePerPezzo') && <td className="num col-cn">—</td>}
+                                  {!hiddenColumns.includes('iva') && <td className="num col-cn">—</td>}
+                                  {!hiddenColumns.includes('extraNoloPerPezzo') && <td className="num col-cn col-extra">—</td>}
+                                  {!hiddenColumns.includes('serviziIvaPerPezzo') && <td className="num col-cn col-extra">—</td>}
+                                  {!hiddenColumns.includes('commissioniPerPezzo') && <td className="num col-cn col-extra">—</td>}
                                 </>}
                               </>}
-                              <td className="num">{fmtEur(sc ? sc.pfuPezzo : item.pfu)}</td>
+                              {!hiddenColumns.includes('pfu') && <td className="num">{fmtEur(sc ? sc.pfuPezzo : item.pfu)}</td>}
                               <td className="num price-final col-finale">
                                 € {fmtEur(prezzoFinale)}
                                 {item.origine === 'CN' && !item.lastBollaId && (
@@ -2867,6 +3148,205 @@ export default function GestionaleImportazioni() {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ===== LISTINI MISURE ===== */}
+          {activeSection === 'sizelists' && (
+            <div className="window">
+              <div className="window-title">
+                <span>Listini Misure — Definisci cosa ti serve davvero</span>
+                <span className="breadcrumb">Home › Listini Misure</span>
+              </div>
+              <div className="filters" style={{ background: '#fff8e1', borderColor: '#ffb74d' }}>
+                <div className="fld" style={{ gridColumn: 'span 2' }}>
+                  <label>Listino attivo (filtra il catalogo)</label>
+                  <select className="ctl" value={activeSizeListId || ''} onChange={e => setActiveSizeListId(e.target.value || null)}>
+                    <option value="">— NESSUNO (mostra tutto) —</option>
+                    {sizeLists.map(l => <option key={l.id} value={l.id}>{l.name} ({l.items.length} misure, {l.qtyTotale} pz)</option>)}
+                  </select>
+                </div>
+                <div className="fld">
+                  <label>&nbsp;</label>
+                  <button className="tbtn primary" onClick={createSizeList}><Plus size={12} /> Nuovo Listino</button>
+                </div>
+                <div className="fld" style={{ gridColumn: 'span 2', alignSelf: 'end' }}>
+                  <div style={{ fontSize: 11, color: '#5d4037', padding: '4px 8px', background: '#ffe0b2', border: '1px solid #ffb74d' }}>
+                    💡 Imposta percentuali e quantità totale: il sistema calcola le qty per misura (sempre numeri pari).
+                  </div>
+                </div>
+              </div>
+
+              {sizeLists.length === 0 ? (
+                <div className="empty">
+                  <div className="em-ttl">Nessun listino misure</div>
+                  Crea un listino con le misure che ti interessano per filtrare il catalogo automaticamente.
+                </div>
+              ) : (
+                <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
+                  {sizeLists.map(list => {
+                    const calcRows = calcolaQtyListino(list);
+                    const isActive = list.id === activeSizeListId;
+                    const sommaPct = list.items.reduce((s, i) => s + (parseFloat(i.percentuale) || 0), 0);
+                    const sommaQty = calcRows.reduce((s, r) => s + r.qty, 0);
+                    return (
+                      <div key={list.id} style={{ background: '#fff', border: isActive ? '2px solid #ff9800' : '1px solid #cfd8dc', marginBottom: 10 }}>
+                        <div style={{ background: isActive ? 'linear-gradient(to bottom,#ffcc80,#ffb74d)' : 'linear-gradient(to bottom,#eceff1,#cfd8dc)', padding: '6px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <List size={14} />
+                            <b style={{ fontSize: 14 }}>{list.name}</b>
+                            <span style={{ fontSize: 10, color: '#5d4037' }}>({list.items.length} misure · {list.qtyTotale} pz tot · {sommaPct.toFixed(0)}%)</span>
+                            {isActive && <span style={{ background: '#ff9800', color: '#fff', padding: '1px 6px', fontSize: 9, fontWeight: 700 }}>ATTIVO</span>}
+                          </div>
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <button className="tbtn" onClick={() => { setActiveSizeListId(isActive ? null : list.id); }} style={{ fontSize: 10 }}>
+                              {isActive ? '◯ Disattiva' : '✓ Attiva'}
+                            </button>
+                            <button className="tbtn primary" onClick={() => { setEditingSizeList({ ...list }); setShowSizeListBuilder(true); }} style={{ fontSize: 10 }}>
+                              <Settings size={11} /> Modifica
+                            </button>
+                            <button className="tbtn" onClick={() => exportListinoPdf(list)} style={{ fontSize: 10 }}>
+                              <Printer size={11} /> PDF
+                            </button>
+                            <button className="tbtn" onClick={() => exportListinoExcel(list)} style={{ fontSize: 10, background: 'linear-gradient(to bottom,#66bb6a,#388e3c)', color: '#fff' }}>
+                              <FileSpreadsheet size={11} /> Excel
+                            </button>
+                            <button className="tbtn danger" onClick={() => deleteSizeList(list.id)} style={{ fontSize: 10 }}>
+                              <Trash2 size={11} />
+                            </button>
+                          </div>
+                        </div>
+                        {list.items.length > 0 && (
+                          <table className="grid compact" style={{ margin: 0 }}>
+                            <thead>
+                              <tr>
+                                <th style={{ width: 30 }}>#</th>
+                                <th>Misura</th>
+                                <th className="num" style={{ width: 70 }}>%</th>
+                                <th className="num" style={{ width: 80 }}>Q.tà calc.</th>
+                                <th>Miglior fornitore</th>
+                                <th className="num">Prezzo finito €</th>
+                                <th className="num">Subtotale €</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {calcRows.map((r, i) => {
+                                const best = getPrezzoListino(r.misura, 'all');
+                                const subtot = (best?.prezzo || 0) * r.qty;
+                                return (
+                                  <tr key={i}>
+                                    <td>{i + 1}</td>
+                                    <td><span className="tag-mis">{r.misura}</span></td>
+                                    <td className="num">{r.percentuale}%</td>
+                                    <td className="num"><b>{r.qty}</b></td>
+                                    <td>{best ? <><span className={`tag-origine ${best.item.origine}`}>{best.item.origine}</span> {best.item.marca} {best.item.modello && '· ' + best.item.modello} <span className="tag-sup">{best.item.supplierName}</span></> : <span style={{ color: '#c62828', fontStyle: 'italic' }}>misura non trovata nei fornitori</span>}</td>
+                                    <td className="num price-final">{best ? '€ ' + fmtEur(best.prezzo) : '—'}</td>
+                                    <td className="num price-final">{best ? '€ ' + fmtEur(subtot) : '—'}</td>
+                                  </tr>
+                                );
+                              })}
+                              <tr style={{ background: '#1976d2', color: '#fff', fontWeight: 700 }}>
+                                <td colSpan="3" style={{ color: '#fff' }}>TOTALI</td>
+                                <td className="num" style={{ color: '#fff' }}>{sommaQty}</td>
+                                <td colSpan="2" style={{ color: '#fff' }}>—</td>
+                                <td className="num" style={{ color: '#fff' }}>€ {fmtEur(calcRows.reduce((s, r) => { const b = getPrezzoListino(r.misura, 'all'); return s + (b?.prezzo || 0) * r.qty; }, 0))}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* MODALE BUILDER */}
+              {showSizeListBuilder && editingSizeList && (
+                <div className="guide-overlay" onClick={() => { setShowSizeListBuilder(false); setEditingSizeList(null); }}>
+                  <div className="guide-modal" style={{ maxWidth: 900 }} onClick={e => e.stopPropagation()}>
+                    <div className="guide-header" style={{ background: 'linear-gradient(to bottom, #ff9800, #e65100)' }}>
+                      <h2>📋 Modifica Listino Misure</h2>
+                      <button className="sim-close" onClick={() => { setShowSizeListBuilder(false); setEditingSizeList(null); }}>✕</button>
+                    </div>
+                    <div className="guide-body">
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+                        <div className="fld">
+                          <label>Nome</label>
+                          <input className="ctl" value={editingSizeList.name} onChange={e => setEditingSizeList({ ...editingSizeList, name: e.target.value })} />
+                        </div>
+                        <div className="fld">
+                          <label>Quantità totale (pezzi)</label>
+                          <input className="ctl" type="number" min="0" step="2" value={editingSizeList.qtyTotale} onChange={e => setEditingSizeList({ ...editingSizeList, qtyTotale: parseInt(e.target.value) || 0 })} />
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+                        <input id="newSizeInp" className="ctl" placeholder="Es. 205/55R16" style={{ flex: 1 }} onKeyDown={e => { if (e.key === 'Enter') { addSizeToList(e.target.value); e.target.value = ''; } }} />
+                        <button className="tbtn primary" onClick={() => { const inp = document.getElementById('newSizeInp'); addSizeToList(inp.value); inp.value = ''; }}>
+                          <Plus size={12} /> Aggiungi misura
+                        </button>
+                      </div>
+
+                      {editingSizeList.items.length === 0 ? (
+                        <div style={{ padding: 30, textAlign: 'center', color: '#90a4ae', background: '#f5f7fa', border: '1px dashed #cfd8dc' }}>
+                          Nessuna misura. Aggiungine sopra.
+                        </div>
+                      ) : (
+                        <table className="grid">
+                          <thead>
+                            <tr>
+                              <th style={{ width: 30 }}>#</th>
+                              <th>Misura</th>
+                              <th className="num" style={{ width: 100 }}>Percentuale %</th>
+                              <th className="num" style={{ width: 100 }}>Q.tà calcolata</th>
+                              <th style={{ width: 40 }}></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {editingSizeList.items.map((it, i) => {
+                              const sommaPct = editingSizeList.items.reduce((s, x) => s + (parseFloat(x.percentuale) || 0), 0) || 1;
+                              const pctNorm = (parseFloat(it.percentuale) || 0) / sommaPct;
+                              const qtyCalc = arrotondaAlPari((editingSizeList.qtyTotale || 0) * pctNorm);
+                              return (
+                                <tr key={i}>
+                                  <td>{i + 1}</td>
+                                  <td>
+                                    <input className="ctl" value={it.misura} onChange={e => updateSizeRow(i, 'misura', e.target.value.toUpperCase())} />
+                                  </td>
+                                  <td className="num">
+                                    <input className="ctl qty-inp" type="number" min="0" max="100" step="1" value={it.percentuale} onChange={e => updateSizeRow(i, 'percentuale', parseFloat(e.target.value) || 0)} style={{ width: 80 }} />
+                                  </td>
+                                  <td className="num"><b>{qtyCalc}</b></td>
+                                  <td>
+                                    <button className="tbtn danger" onClick={() => removeSizeFromList(i)} style={{ padding: '2px 6px', height: 22 }}><X size={11} /></button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                            <tr style={{ background: '#fff3e0', fontWeight: 700 }}>
+                              <td colSpan="2">SOMMA</td>
+                              <td className="num">{editingSizeList.items.reduce((s, i) => s + (parseFloat(i.percentuale) || 0), 0).toFixed(1)}%</td>
+                              <td className="num">{editingSizeList.items.reduce((s, i) => {
+                                const sommaPct = editingSizeList.items.reduce((ss, x) => ss + (parseFloat(x.percentuale) || 0), 0) || 1;
+                                return s + arrotondaAlPari((editingSizeList.qtyTotale || 0) * ((parseFloat(i.percentuale) || 0) / sommaPct));
+                              }, 0)}</td>
+                              <td></td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      )}
+
+                      <div style={{ marginTop: 12, padding: 8, background: '#e3f2fd', fontSize: 11, color: '#0d47a1' }}>
+                        💡 Le quantità sono sempre arrotondate al numero pari più vicino (le gomme si vendono in coppie). Le percentuali possono non sommare a 100, il sistema le normalizza.
+                      </div>
+                    </div>
+                    <div className="guide-footer" style={{ justifyContent: 'space-between' }}>
+                      <button className="tbtn" onClick={() => { setShowSizeListBuilder(false); setEditingSizeList(null); }}>Annulla</button>
+                      <button className="tbtn success" onClick={saveEditingSizeList}><Check size={12} /> Salva Listino</button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
