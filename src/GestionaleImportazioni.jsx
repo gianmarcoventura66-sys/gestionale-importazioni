@@ -309,6 +309,10 @@ export default function GestionaleImportazioni() {
   // Inline editing: { itemId, field } per evidenziare la cella in editing
   const [inlineEdit, setInlineEdit] = useState(null);
 
+  // ===== PANNELLO CONFRONTO LATERALE =====
+  const [comparePanelOpen, setComparePanelOpen] = useState(false);
+  const [compareItemIds, setCompareItemIds] = useState([]); // array di item.id agganciati
+
   // ===== SIMULATORE WHAT-IF =====
   const [simulatorOpen, setSimulatorOpen] = useState(false);
   const [simulatorTarget, setSimulatorTarget] = useState(null); // { type: 'item'|'bolla', data: ... }
@@ -556,6 +560,7 @@ export default function GestionaleImportazioni() {
       try { const sl = await window.storage.get('sizeLists'); if (sl) setSizeLists(JSON.parse(sl.value)); } catch (e) {}
       try { const al = await window.storage.get('activeSizeListId'); if (al) setActiveSizeListId(al.value === 'null' ? null : al.value); } catch (e) {}
       try { const hc = await window.storage.get('hiddenColumns'); if (hc) setHiddenColumns(JSON.parse(hc.value)); } catch (e) {}
+      try { const ci = await window.storage.get('compareItemIds'); if (ci) setCompareItemIds(JSON.parse(ci.value)); } catch (e) {}
       setLoading(false);
     })();
   }, []);
@@ -571,6 +576,7 @@ export default function GestionaleImportazioni() {
   useEffect(() => { if (!loading) window.storage.set('sizeLists', JSON.stringify(sizeLists)).catch(() => {}); }, [sizeLists, loading]);
   useEffect(() => { if (!loading) window.storage.set('activeSizeListId', String(activeSizeListId)).catch(() => {}); }, [activeSizeListId, loading]);
   useEffect(() => { if (!loading) window.storage.set('hiddenColumns', JSON.stringify(hiddenColumns)).catch(() => {}); }, [hiddenColumns, loading]);
+  useEffect(() => { if (!loading) window.storage.set('compareItemIds', JSON.stringify(compareItemIds)).catch(() => {}); }, [compareItemIds, loading]);
 
   // Auto-ricalcola 9AJ quando cambiano le unità (solo se le unità sono > 0)
   useEffect(() => {
@@ -1278,6 +1284,74 @@ export default function GestionaleImportazioni() {
     setEditingItem({ ...item });
   };
 
+  // ===== PANNELLO CONFRONTO =====
+  const addToCompare = (item) => {
+    setCompareItemIds(prev => prev.includes(item.id) ? prev : [...prev, item.id]);
+    setComparePanelOpen(true);
+  };
+  const removeFromCompare = (itemId) => {
+    setCompareItemIds(prev => prev.filter(id => id !== itemId));
+  };
+  const clearCompare = () => {
+    setCompareItemIds([]);
+    setComparePanelOpen(false);
+  };
+  // Articoli effettivamente presenti nel pannello (filtra quelli rimossi nel frattempo)
+  const compareItems = useMemo(() => {
+    return compareItemIds.map(id => allItems.find(it => it.id === id)).filter(Boolean);
+  }, [compareItemIds, allItems]);
+
+  // ===== TOTALE FILTRATO PER COLONNE NASCOSTE =====
+  // Ricalcola il "totale visibile" di un articolo escludendo le voci nascoste
+  // Mappatura colonna → componente della scomposizione
+  const COLONNE_TO_COMPONENT = {
+    fobEur: 'fobEur',
+    noloPerPezzo: 'noloPerPezzo',
+    aggPerPezzo: 'aggPerPezzo',
+    dazio: 'dazio',
+    tassePerPezzo: 'tassePerPezzo',
+    iva: 'iva',
+    extraNoloPerPezzo: 'extraNoloPerPezzo',
+    serviziIvaPerPezzo: 'serviziIvaPerPezzo',
+    commissioniPerPezzo: 'commissioniPerPezzo',
+    pfu: 'pfuPezzo'
+  };
+  // Etichette colonne (per badge avviso)
+  const COLONNE_LABELS = {
+    fobEur: 'FOB',
+    noloPerPezzo: 'Nolo',
+    aggPerPezzo: 'Aggiust.',
+    dazio: 'Dazio',
+    tassePerPezzo: '9AJ',
+    iva: 'IVA',
+    extraNoloPerPezzo: 'ExtraNolo',
+    serviziIvaPerPezzo: 'Servizi',
+    commissioniPerPezzo: 'Commissioni',
+    pfu: 'PFU',
+    valoreStatistico: 'CIF (display)'
+  };
+
+  // Calcola il "totale visibile" considerando le colonne nascoste
+  const calcTotaleFiltrato = (sc) => {
+    if (!sc) return 0;
+    let totale = sc.costoFinale; // baseline = totale completo
+    // Sottrai ogni componente di una colonna nascosta
+    for (const colKey of hiddenColumns) {
+      const compKey = COLONNE_TO_COMPONENT[colKey];
+      if (!compKey) continue;
+      const valToSubtract = parseFloat(sc[compKey]) || 0;
+      totale -= valToSubtract;
+    }
+    return totale;
+  };
+
+  // Etichette voci escluse (per badge)
+  const voci_escluse_labels = useMemo(() => {
+    return hiddenColumns
+      .filter(k => COLONNE_LABELS[k] && k !== 'valoreStatistico')
+      .map(k => COLONNE_LABELS[k]);
+  }, [hiddenColumns]);
+
   // Calcola il prezzo finale per una misura del listino, dato un fornitore
   const getPrezzoListino = (misura, supplierId) => {
     const m = misura.toUpperCase().trim();
@@ -1462,18 +1536,18 @@ export default function GestionaleImportazioni() {
 
   const filteredItems = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
-    // Se la query sembra una misura, calcolo la versione normalizzata da confrontare
-    const qNorm = q ? normalizeMisuraForSearch(q) : '';
-    const isMisuraSearch = q && /\d/.test(q) && qNorm.length === 7 && /^\d+$/.test(qNorm);
+    // Estraggo la versione "solo cifre" della query
+    const qDigits = q.replace(/\D/g, '');
+    // Considero ricerca-misura quando la query è composta principalmente da cifre (con eventuali R, /, spazi, -)
+    // e ha almeno 3 cifre per essere significativa
+    const isMisuraSearch = qDigits.length >= 3 && q.length > 0 && /^[\d\s\/\-rRzZ\.]+$/.test(q);
     let list = allItems.filter(i => {
       // Filtro listino misure attivo
       if (activeSizeSet && activeSizeSet.size > 0) {
         const m = (i.misura || '').toUpperCase().trim();
         const mNorm = normalizeMisuraForSearch(m);
-        // Verifica match con qualsiasi versione (display o normalizzata)
         let inSet = activeSizeSet.has(m) || activeSizeSet.has(mNorm);
         if (!inSet) {
-          // Confronto normalizzato
           for (const s of activeSizeSet) {
             if (normalizeMisuraForSearch(s) === mNorm) { inSet = true; break; }
           }
@@ -1492,11 +1566,16 @@ export default function GestionaleImportazioni() {
       const inMarca = i.marca.toLowerCase().includes(q);
       const inModello = (i.modello || '').toLowerCase().includes(q);
       const inMisura = (i.misura || '').toLowerCase().includes(q);
-      // Ricerca permissiva su misura: confronto la versione normalizzata
+      // Ricerca permissiva su misura
       let inMisuraNorm = false;
       if (isMisuraSearch) {
         const itemNorm = i.misuraNorm || normalizeMisuraForSearch(i.misura || '');
-        inMisuraNorm = itemNorm.includes(qNorm) || qNorm.includes(itemNorm);
+        // Match se: la query normalizzata è un PREFISSO della misura normalizzata
+        // Esempio: query "20555" → trova "2055516", "2055517", "2055518" (tutti i 205/55 di qualsiasi diametro)
+        // Esempio: query "205" → trova tutti i 205/* (es. 2055516, 2056017, 2057016, ecc.)
+        if (itemNorm.startsWith(qDigits)) inMisuraNorm = true;
+        // Match anche se la query è uguale al normalizzato completo (es. "2055516" == "2055516")
+        if (itemNorm === qDigits) inMisuraNorm = true;
       }
       return inMarca || inModello || inMisura || inMisuraNorm;
     });
@@ -2669,11 +2748,31 @@ export default function GestionaleImportazioni() {
         .inline-edit-inp { width: 70px; height: 22px; border: 1px solid transparent; padding: 0 4px; font-size: 11px; font-family: 'Consolas', monospace; text-align: right; background: transparent; color: inherit; transition: background 0.15s, border-color 0.15s; }
         .inline-edit-inp:hover { background: #fff9c4; border-color: #ffd54f; }
         .inline-edit-inp:focus { background: #fff; border-color: #1976d2; outline: 1px solid #1976d2; }
+
+        /* ===== PANNELLO CONFRONTO LATERALE ===== */
+        .compare-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 420px; background: #f5f7fa; border-left: 2px solid #1976d2; box-shadow: -4px 0 16px rgba(0,0,0,0.2); z-index: 150; display: flex; flex-direction: column; animation: slideInRight 0.2s ease; }
+        @keyframes slideInRight { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        .compare-panel-head { background: linear-gradient(to bottom, #1976d2, #0d47a1); color: #fff; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+        .compare-panel-body { flex: 1; overflow-y: auto; padding: 8px; }
+        .compare-card { background: #fff; border: 1px solid #cfd8dc; padding: 8px; margin-bottom: 8px; }
+        .compare-card.best { border-color: #2e7d32; border-width: 2px; background: linear-gradient(to bottom, #e8f5e9, #fff); }
+        .compare-card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+        .compare-meta { font-size: 11px; color: #546e7a; margin-bottom: 2px; }
+        .compare-prices { background: #f5f7fa; border: 1px solid #eceff1; padding: 6px; margin-top: 4px; }
+        .compare-row { display: flex; justify-content: space-between; padding: 2px 4px; font-size: 11px; }
+        .compare-row .lbl { color: #546e7a; }
+        .compare-row .val { font-family: 'Consolas', monospace; font-weight: 600; }
+        .compare-row.total { background: #e3f2fd; padding: 4px; margin-top: 4px; font-size: 13px; }
+        .compare-row.total .lbl { color: #0d47a1; font-weight: 700; }
+        .compare-row.total .val { color: #0d47a1; font-size: 14px; }
+        .compare-row.delta { background: #ffebee; padding: 3px 4px; margin-top: 2px; }
+        .compare-row.delta .val { color: #c62828; font-weight: 700; }
+        .compare-row.best-row { background: #c8e6c9; padding: 4px; margin-top: 2px; font-size: 11px; }
       `}</style>
 
       {/* MENU BAR */}
       <div className="menubar" onMouseLeave={() => setOpenMenu(null)}>
-        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v1.9</div>
+        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v2.0.1</div>
 
         {/* ARCHIVIO */}
         <div className={`menubar-item ${openMenu === 'archivio' ? 'open' : ''}`} onClick={() => setOpenMenu(openMenu === 'archivio' ? null : 'archivio')}>
@@ -3083,6 +3182,35 @@ export default function GestionaleImportazioni() {
                     </div>
                   )}
 
+                  {/* Banner vista filtrata (colonne nascoste = totale ricalcolato) */}
+                  {voci_escluse_labels.length > 0 && (
+                    <div style={{ background: '#fff3e0', border: '1px solid #ff9800', padding: 8, margin: '0 8px 6px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                      <div style={{ fontSize: 12, color: '#bf360c' }}>
+                        ⚠ <b>Vista TOTALE filtrata</b> — il totale di ogni riga ESCLUDE: <b>{voci_escluse_labels.join(', ')}</b>. I prezzi mostrati sono inferiori a quelli reali e servono solo per simulazioni.
+                      </div>
+                      <button className="tbtn" onClick={showAllColumns} style={{ fontSize: 10, background: '#fff3e0', borderColor: '#ff9800', color: '#bf360c' }}>
+                        ↺ Ripristina vista completa
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Barra pannello confronto */}
+                  {compareItemIds.length > 0 && (
+                    <div style={{ background: '#e3f2fd', border: '1px solid #1976d2', padding: 8, margin: '0 8px 6px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                      <div style={{ fontSize: 12, color: '#0d47a1' }}>
+                        📊 <b>{compareItems.length} articol{compareItems.length === 1 ? 'o' : 'i'} nel pannello confronto</b>
+                      </div>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <button className="tbtn primary" onClick={() => setComparePanelOpen(!comparePanelOpen)} style={{ fontSize: 10 }}>
+                          {comparePanelOpen ? '◀ Chiudi pannello' : '▶ Apri pannello'}
+                        </button>
+                        <button className="tbtn" onClick={clearCompare} style={{ fontSize: 10 }}>
+                          <X size={11} /> Svuota
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="grid-wrap">
                     <table className={`grid ${compactView ? 'compact' : ''} ${activeCatalogTab !== 'eu' ? 'scomposto' : ''}`}>
                       <thead>
@@ -3110,6 +3238,7 @@ export default function GestionaleImportazioni() {
                           </>}
                           {!hiddenColumns.includes('pfu') && <th className="num col-clickable" title="Click per nascondere · PFU" onClick={() => toggleColumnVisibility('pfu')}>PFU € <span className="hide-x">×</span></th>}
                           <th className="num col-finale" onClick={() => toggleSort('prezzoFinale')}>TOTALE €</th>
+                          <th style={{ width: 28, cursor: 'default' }} title="Aggiungi al pannello confronto">⊕</th>
                           <th style={{ width: 28, cursor: 'default' }} title="Modifica completa">✏️</th>
                           <th style={{ width: 28, cursor: 'default' }} title="Simulatore">🔍</th>
                         </tr>
@@ -3182,13 +3311,40 @@ export default function GestionaleImportazioni() {
                               </>}
                               {!hiddenColumns.includes('pfu') && <td className="num">{fmtEur(sc ? sc.pfuPezzo : item.pfu)}</td>}
                               <td className="num price-final col-finale">
-                                € {fmtEur(prezzoFinale)}
-                                {item.origine === 'CN' && !item.lastBollaId && (
-                                  <span title="Prezzo stimato con parametri attuali" style={{ fontSize: 8, marginLeft: 4, background: '#fff3e0', color: '#e65100', padding: '1px 4px', border: '1px solid #ffb74d', borderRadius: 2, fontWeight: 700 }}>LIVE</span>
-                                )}
-                                {item.lastBollaId && (
-                                  <span title="Prezzo aggiornato con bolla reale" style={{ fontSize: 8, marginLeft: 4, background: '#e8f5e9', color: '#1b5e20', padding: '1px 4px', border: '1px solid #66bb6a', borderRadius: 2, fontWeight: 700 }}>REALE</span>
-                                )}
+                                {(() => {
+                                  // Per articoli CN con scomposizione, calcolo il totale filtrato
+                                  let totVisible, totFull;
+                                  if (sc) {
+                                    totFull = sc.costoFinale;
+                                    totVisible = calcTotaleFiltrato(sc);
+                                  } else {
+                                    totFull = parseFloat(item.prezzoFinale) || 0;
+                                    totVisible = totFull; // EU: nessun filtro
+                                  }
+                                  const filtered = Math.abs(totVisible - totFull) > 0.001;
+                                  return (
+                                    <>
+                                      <span style={{ color: filtered ? '#bf360c' : undefined }}>€ {fmtEur(totVisible)}</span>
+                                      {filtered && (
+                                        <span title={`Totale filtrato: voci escluse: ${voci_escluse_labels.join(', ')}\nTotale completo: € ${fmtEur(totFull)}`}
+                                              style={{ fontSize: 8, marginLeft: 4, background: '#fff3e0', color: '#bf360c', padding: '1px 4px', border: '1px solid #ff9800', borderRadius: 2, fontWeight: 700 }}>
+                                          ⚠ FILTRATO
+                                        </span>
+                                      )}
+                                      {!filtered && item.origine === 'CN' && !item.lastBollaId && (
+                                        <span title="Prezzo stimato con parametri attuali" style={{ fontSize: 8, marginLeft: 4, background: '#fff3e0', color: '#e65100', padding: '1px 4px', border: '1px solid #ffb74d', borderRadius: 2, fontWeight: 700 }}>LIVE</span>
+                                      )}
+                                      {!filtered && item.lastBollaId && (
+                                        <span title="Prezzo aggiornato con bolla reale" style={{ fontSize: 8, marginLeft: 4, background: '#e8f5e9', color: '#1b5e20', padding: '1px 4px', border: '1px solid #66bb6a', borderRadius: 2, fontWeight: 700 }}>REALE</span>
+                                      )}
+                                    </>
+                                  );
+                                })()}
+                              </td>
+                              <td style={{ textAlign: 'center', padding: 2 }} onClick={e => e.stopPropagation()}>
+                                <button className={`tbtn ${compareItemIds.includes(item.id) ? 'primary' : ''}`} onClick={() => compareItemIds.includes(item.id) ? removeFromCompare(item.id) : addToCompare(item)} title={compareItemIds.includes(item.id) ? 'Rimuovi dal confronto' : 'Aggiungi al pannello confronto'} style={{ padding: '1px 5px', height: 20, fontSize: 10 }}>
+                                  {compareItemIds.includes(item.id) ? '⊖' : '⊕'}
+                                </button>
                               </td>
                               <td style={{ textAlign: 'center', padding: 2 }} onClick={e => e.stopPropagation()}>
                                 <button className="tbtn" onClick={() => openEditItemModal(item)} title="Modifica articolo (tutti i campi)" style={{ padding: '1px 5px', height: 20, fontSize: 10 }}>
@@ -4493,6 +4649,83 @@ export default function GestionaleImportazioni() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== PANNELLO CONFRONTO LATERALE ===== */}
+      {comparePanelOpen && compareItems.length > 0 && (
+        <div className="compare-panel">
+          <div className="compare-panel-head">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: 14, fontWeight: 700 }}>📊 Pannello Confronto</span>
+              <span style={{ background: '#fff', color: '#0d47a1', padding: '1px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700 }}>{compareItems.length}</span>
+            </div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button className="tbtn" onClick={clearCompare} style={{ fontSize: 10, padding: '2px 6px' }}><X size={11} /> Svuota tutto</button>
+              <button className="sim-close" onClick={() => setComparePanelOpen(false)}>✕</button>
+            </div>
+          </div>
+          <div className="compare-panel-body">
+            {(() => {
+              // Calcolo prezzo "effettivo" filtrato per ogni item
+              const itemsWithPrice = compareItems.map(it => {
+                const sc = it.origine === 'CN' ? scomposizioneCatalogo[it.id] : null;
+                const totFull = sc ? sc.costoFinale : (parseFloat(it.prezzoFinale) || 0);
+                const totVisible = sc ? calcTotaleFiltrato(sc) : totFull;
+                return { ...it, _sc: sc, _totFull: totFull, _totVisible: totVisible };
+              });
+              // Min e max per calcolare differenze
+              const minPrice = itemsWithPrice.length > 0 ? Math.min(...itemsWithPrice.map(i => i._totVisible)) : 0;
+              return itemsWithPrice.map((it, idx) => {
+                const deltaPct = minPrice > 0 ? ((it._totVisible - minPrice) / minPrice * 100) : 0;
+                const isMin = Math.abs(it._totVisible - minPrice) < 0.001;
+                return (
+                  <div key={it.id} className={`compare-card ${isMin ? 'best' : ''}`}>
+                    <div className="compare-card-head">
+                      <span className={`tag-origine ${it.origine}`}>{it.origine}</span>
+                      <b style={{ flex: 1 }}>{it.marca}</b>
+                      <button className="tbtn danger" onClick={() => removeFromCompare(it.id)} style={{ padding: '0 4px', height: 18, fontSize: 10 }}><X size={9} /></button>
+                    </div>
+                    {it.modello && <div className="compare-meta">{it.modello}</div>}
+                    <div className="compare-meta">
+                      <span className="tag-mis">{it.misura || '—'}</span>
+                      <span className="tag-sup" style={{ marginLeft: 4 }}>{it.supplierName}</span>
+                    </div>
+                    <div className="compare-prices">
+                      <div className="compare-row">
+                        <span className="lbl">Prezzo originale</span>
+                        <span className="val">{it.currency || 'EUR'} {fmtEur(it.prezzoOriginale)}</span>
+                      </div>
+                      {it._sc && <>
+                        <div className="compare-row"><span className="lbl">FOB €</span><span className="val">{fmtEur(it._sc.fobEur)}</span></div>
+                        <div className="compare-row"><span className="lbl">Nolo /pz</span><span className="val">{fmtEur(it._sc.noloPerPezzo)}</span></div>
+                        <div className="compare-row"><span className="lbl">CIF (v.46)</span><span className="val"><b>{fmtEur(it._sc.valoreStatistico)}</b></span></div>
+                        <div className="compare-row"><span className="lbl">Dazio</span><span className="val">{fmtEur(it._sc.dazio)}</span></div>
+                        <div className="compare-row"><span className="lbl">IVA</span><span className="val">{fmtEur(it._sc.iva)}</span></div>
+                        <div className="compare-row"><span className="lbl">Extra/Servizi</span><span className="val">{fmtEur(it._sc.extraNoloPerPezzo + it._sc.serviziIvaPerPezzo)}</span></div>
+                        <div className="compare-row"><span className="lbl">PFU</span><span className="val">{fmtEur(it._sc.pfuPezzo)}</span></div>
+                      </>}
+                      <div className="compare-row total">
+                        <span className="lbl">TOTALE{voci_escluse_labels.length > 0 ? ' (filtrato)' : ''}</span>
+                        <span className="val total-val">€ {fmtEur(it._totVisible)}</span>
+                      </div>
+                      {!isMin && (
+                        <div className="compare-row delta">
+                          <span className="lbl">Δ vs miglior prezzo</span>
+                          <span className="val">+{deltaPct.toFixed(1)}% (+{fmtEur(it._totVisible - minPrice)} €)</span>
+                        </div>
+                      )}
+                      {isMin && compareItems.length > 1 && (
+                        <div className="compare-row best-row">
+                          <span style={{ flex: 1, color: '#1b5e20', fontWeight: 700 }}>🏆 MIGLIOR PREZZO</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              });
+            })()}
           </div>
         </div>
       )}
