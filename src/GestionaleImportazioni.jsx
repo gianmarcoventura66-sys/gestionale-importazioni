@@ -8,6 +8,67 @@ const _fmtE = (n) => {
   return num.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 };
 
+// === LOOKUP CAPACITÀ CONTAINER 40'HQ PER MISURA (basata su Arivo, valida per tutti i fornitori) ===
+// Source: Arivo Cambodia PCR Price List 2026.04.14
+// Per altre misure si stima dalla formula: capacità ≈ f(diametro, larghezza)
+const CONTAINER_40HQ_CAPACITY = {
+  '1456515':2350,'1457013':2850,'1458013':2810,'1556015':2230,'1556513':2270,'1556514':2250,
+  '1557013':2300,'1557014':2250,'1557019':1500,'1558013':2120,'1656014':2050,'1656015':2050,
+  '1656513':2150,'1656514':1950,'1656515':1960,'1657013':2070,'1657014':1980,'1658013':1960,
+  '1755515':1830,'1755516':1790,'1756014':1880,'1756015':1820,'1756513':1970,'1756514':1850,
+  '1756515':1730,'1757013':2050,'1757014':1750,'1757516':1750,'1758014':1750,'1855016':1540,
+  '1855514':1660,'1855515':1650,'1855516':1400,'1856014':1750,'1856015':1560,'1856016':1420,
+  '1856514':1688,'1856515':1570,'1857014':1610,'1857516':1230,'1954515':1750,'1954516':1360,
+  '1955015':1390,'1955016':1350,'1955515':1490,'1955516':1300,'1955520':1150,'1956014':1380,
+  '1956015':1370,'1956016':1300,'1956515':1350,'1956516':1080,'1957014':1300,'1957015':1150,
+  '1957516':1050,'2054017':1200,'2054516':1180,'2054517':1210,'2055016':1200,'2055017':1130,
+  '2055515':1190,'2055516':1280,'2055517':1120,'2055519':1100,'2056015':1290,'2056016':1186,
+  '2056515':1220,'2056516':1200,'2057015':1150,'2057516':960,'2154516':1150,'2154517':1060,
+  '2154518':1000,'2155017':950,'2155516':1050,'2155517':980,'2155518':900,'2156016':1050,
+  '2156017':920,'2156515':1100,'2156516':1000,'2156517':860,'2157015':1030,'2157016':850,
+  '2157516':950,'2254018':960,'2254019':940,'2254517':960,'2254518':900,'2254519':830,
+  '2255017':1030,'2255018':920,'2255516':980,'2255517':880,'2255518':830,'2255519':820,
+  '2256016':1020,'2256017':930,'2256018':900,'2256516':880,'2256517':800,'2257015':910,
+  '2257016':820,'2257516':800,'2353519':850,'2354018':880,'2354517':900,'2354518':820,
+  '2354519':810,'2355018':800,'2355019':780,'2355517':860,'2355518':750,'2355519':720,
+  '2355520':680,'2356016':850,'2356017':750,'2356018':760,'2356516':820,'2356517':800,
+  '2453520':780,'2454017':860,'2454018':850,'2454019':760,'2454020':730,'2454517':830,
+  '2454518':810,'2454519':750,'2454520':770,'2455018':780,'2455019':680,'2455020':600,
+  '2455519':700,'2457016':760,'2553519':720,'2553520':700,'2554019':730,'2554020':680,
+  '2554519':710,'2554520':710,'2555019':700,'2555020':580,'2555518':650,'2555519':640,
+  '2555520':600,'2556017':650,'2556018':620,'2653518':760,'2654520':560,'2654521':600,
+  '2655020':550,'2656018':580,'2656517':640,'2657016':640,'2753020':620,'2753519':700,
+  '2753520':650,'2754019':650,'2754020':650,'2754021':580,'2754022':560,'2754520':620,
+  '2754521':600,'2755020':500,'2755520':520,'2756020':500,'2854021':520,'2854519':600,
+  '2854522':490,'2855020':510,'2953521':500,'2954021':530,'3054020':430,'3153520':560,
+  '3153521':400,'3153522':350,'3154021':370,
+};
+
+// Stima capacità 40'HQ per misure non in tabella (basata sul rapporto)
+function stimaCapacita40HQ(misuraNorm) {
+  if (!misuraNorm || misuraNorm.length !== 7) return 1000;
+  if (CONTAINER_40HQ_CAPACITY[misuraNorm]) return CONTAINER_40HQ_CAPACITY[misuraNorm];
+  // Estraggo larghezza, spalla, raggio
+  const width = parseInt(misuraNorm.slice(0, 3));
+  const aspect = parseInt(misuraNorm.slice(3, 5));
+  const rim = parseInt(misuraNorm.slice(5, 7));
+  // Cerco misure simili nella tabella per stima
+  let best = null;
+  let bestDist = Infinity;
+  for (const k of Object.keys(CONTAINER_40HQ_CAPACITY)) {
+    const w = parseInt(k.slice(0, 3));
+    const a = parseInt(k.slice(3, 5));
+    const r = parseInt(k.slice(5, 7));
+    // distanza ponderata: il raggio pesa di più (impatto maggiore sul volume)
+    const dist = Math.abs(r - rim) * 100 + Math.abs(w - width) * 5 + Math.abs(a - aspect) * 2;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = CONTAINER_40HQ_CAPACITY[k];
+    }
+  }
+  return best || 1000;
+}
+
 // === HELPER MISURE PNEUMATICI ===
 // Estrae i 3 numeri chiave (larghezza, spalla, diametro) da una stringa misura
 // Funziona con: 205/55R16, 205/55 R16, 205/55r16, 205-55-16, 2055516, "205 55 16", ecc.
@@ -282,7 +343,9 @@ export default function GestionaleImportazioni() {
   const [filterOrigine, setFilterOrigine] = useState(''); // '' | 'EU' | 'CN'
   const [sortBy, setSortBy] = useState({ field: 'marca', dir: 'asc' });
   const [activeSection, setActiveSection] = useState('catalogo');
-  const [compactView, setCompactView] = useState(false); // vista compatta catalogo
+  const [compactView, setCompactView] = useState(false); // legacy compatibilità (deprecato in v2.2)
+  // ===== VIEW MODE (v2.2): 'detail' | 'compact' | 'price-only' =====
+  const [viewMode, setViewMode] = useState('detail'); // detail = tutte le colonne (default)
   const [compareMisuraQuery, setCompareMisuraQuery] = useState(''); // ricerca misura nel confronto
   const [openMenu, setOpenMenu] = useState(null); // 'archivio'|'modifica'|'visualizza'|'strumenti'|'help'
   const [showGuideModal, setShowGuideModal] = useState(false);
@@ -308,6 +371,20 @@ export default function GestionaleImportazioni() {
   const [editingItem, setEditingItem] = useState(null);
   // Inline editing: { itemId, field } per evidenziare la cella in editing
   const [inlineEdit, setInlineEdit] = useState(null);
+
+  // ===== CONFRONTO SCENARI ARTICOLO SINGOLO (v2.2) =====
+  const [articleScenarioModal, setArticleScenarioModal] = useState(null); // {item, scenarios: []}
+
+  // ===== EXPORT WIZARD (v2.2) =====
+  const [exportWizard, setExportWizard] = useState(null); // null o {section, format, options}
+
+  // ===== SIMULAZIONE SCONTO IMPONIBILE (v2.3) =====
+  // null = disattivato. Object = { pct: 30, applyDazio: true, applyIva: true, apply9AJ: false, applyAddizionali: false }
+  const [scontoImponibile, setScontoImponibile] = useState(null);
+
+  // ===== CAPACITÀ 40HQ DEI VARI ARTICOLI (override utente) =====
+  // { [misuraNorm]: capacità } - se l'utente vuole sovrascrivere quelle dal lookup
+  const [capacityOverrides, setCapacityOverrides] = useState({});
 
   // ===== PANNELLO CONFRONTO LATERALE =====
   const [comparePanelOpen, setComparePanelOpen] = useState(false);
@@ -564,6 +641,9 @@ export default function GestionaleImportazioni() {
       try { const b = await window.storage.get('bolle'); if (b) setBolle(JSON.parse(b.value)); } catch (e) {}
       try { const cp = await window.storage.get('chinaParams'); if (cp) setChinaParams(prev => ({ ...prev, ...JSON.parse(cp.value) })); } catch (e) {}
       try { const cv = await window.storage.get('compactView'); if (cv) setCompactView(cv.value === 'true'); } catch (e) {}
+      try { const vm = await window.storage.get('viewMode'); if (vm && ['detail','compact','price-only'].includes(vm.value)) setViewMode(vm.value); } catch (e) {}
+      try { const si = await window.storage.get('scontoImponibile'); if (si && si.value && si.value !== 'null') setScontoImponibile(JSON.parse(si.value)); } catch (e) {}
+      try { const co = await window.storage.get('capacityOverrides'); if (co) setCapacityOverrides(JSON.parse(co.value)); } catch (e) {}
       try { const sp = await window.storage.get('supplierParams'); if (sp) setSupplierParams(JSON.parse(sp.value)); } catch (e) {}
       try { const sl = await window.storage.get('sizeLists'); if (sl) setSizeLists(JSON.parse(sl.value)); } catch (e) {}
       try { const al = await window.storage.get('activeSizeListId'); if (al) setActiveSizeListId(al.value === 'null' ? null : al.value); } catch (e) {}
@@ -580,6 +660,9 @@ export default function GestionaleImportazioni() {
   useEffect(() => { if (!loading) window.storage.set('bolle', JSON.stringify(bolle)).catch(() => {}); }, [bolle, loading]);
   useEffect(() => { if (!loading) window.storage.set('chinaParams', JSON.stringify(chinaParams)).catch(() => {}); }, [chinaParams, loading]);
   useEffect(() => { if (!loading) window.storage.set('compactView', String(compactView)).catch(() => {}); }, [compactView, loading]);
+  useEffect(() => { if (!loading) window.storage.set('viewMode', viewMode).catch(() => {}); }, [viewMode, loading]);
+  useEffect(() => { if (!loading) window.storage.set('scontoImponibile', JSON.stringify(scontoImponibile)).catch(() => {}); }, [scontoImponibile, loading]);
+  useEffect(() => { if (!loading) window.storage.set('capacityOverrides', JSON.stringify(capacityOverrides)).catch(() => {}); }, [capacityOverrides, loading]);
   useEffect(() => { if (!loading) window.storage.set('supplierParams', JSON.stringify(supplierParams)).catch(() => {}); }, [supplierParams, loading]);
   useEffect(() => { if (!loading) window.storage.set('sizeLists', JSON.stringify(sizeLists)).catch(() => {}); }, [sizeLists, loading]);
   useEffect(() => { if (!loading) window.storage.set('activeSizeListId', String(activeSizeListId)).catch(() => {}); }, [activeSizeListId, loading]);
@@ -736,6 +819,7 @@ export default function GestionaleImportazioni() {
     const misIdx = colIdx(chinaMapping.misura);
     const prIdx = colIdx(chinaMapping.prezzo);
     const qtyIdx = colIdx(chinaMapping.qty);
+    const cap40Idx = colIdx(chinaMapping.capacita40HQ || '');
 
     const items = [];
     let totalQty = 0;
@@ -761,7 +845,8 @@ export default function GestionaleImportazioni() {
         idx: i,
         marca: brandIdx >= 0 ? String(row[brandIdx] || '').trim() : chinaParams.fornitore,
         modello: modIdx >= 0 ? String(row[modIdx] || '').trim() : '',
-        misura, qty: qty || 1, prezzoUsd: prezzo, pfuFascia
+        misura, qty: qty || 1, prezzoUsd: prezzo, pfuFascia,
+        capacita40HQ: cap40Idx >= 0 ? parseInt(String(row[cap40Idx] || '').replace(/[^\d]/g, '')) || null : null
       });
       totalQty += (qty || 1);
     }
@@ -787,6 +872,8 @@ export default function GestionaleImportazioni() {
       const prezzoStimato = prezzoEurBase + dazioStimato + ivaStimata + pfuPezzo;
       const misuraDisplay = formatMisuraDisplay(item.misura);
       const misuraNorm = normalizeMisuraForSearch(item.misura);
+      // Capacità container 40'HQ: dal file se presente, altrimenti stima
+      const cap40hq = item.capacita40HQ ? parseInt(item.capacita40HQ) : stimaCapacita40HQ(misuraNorm);
       return {
         id: supplierId + '_' + i, supplierId, supplierName: p.fornitore,
         origine: 'CN',
@@ -802,7 +889,8 @@ export default function GestionaleImportazioni() {
         iva: Math.round(ivaStimata * 100) / 100,
         prezzoFinale: Math.round(prezzoStimato * 100) / 100, // STIMA indicativa
         pfuFascia: item.pfuFascia,
-        qtyDisponibile: item.qty
+        qtyDisponibile: item.qty,
+        capacita40HQ: cap40hq
       };
     });
     setSuppliers([...suppliers, {
@@ -1251,6 +1339,56 @@ export default function GestionaleImportazioni() {
   const showAllColumns = () => setHiddenColumns([]);
   const hideAllExtraColumns = () => setHiddenColumns(['fobEur', 'noloPerPezzo', 'aggPerPezzo', 'valoreStatistico', 'dazio', 'tassePerPezzo', 'iva', 'extraNoloPerPezzo', 'serviziIvaPerPezzo', 'commissioniPerPezzo', 'pfu']);
 
+  // ===== HELPER CAPACITÀ 40HQ (v2.3) =====
+  // Ritorna capacità effettiva: override → articolo.capacita40HQ → lookup → stima
+  const getCapacita40HQ = (item) => {
+    if (!item) return 1000;
+    const norm = item.misuraNorm || normalizeMisuraForSearch(item.misura || '');
+    if (capacityOverrides[norm]) return parseInt(capacityOverrides[norm]);
+    if (item.capacita40HQ) return parseInt(item.capacita40HQ);
+    return stimaCapacita40HQ(norm);
+  };
+
+  // Ritorna capacità effettiva 20': è circa 0.43 di un 40'HQ (regola Arivo)
+  const getCapacita20BOX = (item) => Math.round(getCapacita40HQ(item) * 0.43);
+
+  // ===== HELPER SIMULAZIONE SCONTO IMPONIBILE (v2.3) =====
+  // Ricalcola la scomposizione applicando lo sconto% sull'imponibile delle voci selezionate
+  // sc è la scomposizione "reale", ritorna oggetto con costoFinale_simulato + dettaglio voci
+  const calcolaScompConSconto = (sc, sconto, params) => {
+    if (!sc || !sconto || !sconto.pct) return null;
+    const pct = parseFloat(sconto.pct) || 0;
+    if (pct <= 0) return null;
+    const fattore = 1 - (pct / 100); // es. 30% sconto → 0.70
+    // Calcolo i nuovi imponibili scontati
+    let valStatScontato = sc.valoreStatistico;
+    if (sconto.applyDazio || sconto.applyIva) {
+      // Lo sconto si applica sull'imponibile del dazio (= valore statistico)
+      valStatScontato = sc.valoreStatistico * fattore;
+    }
+    // Dazio scontato (se richiesto)
+    const dazioNew = sconto.applyDazio ? (valStatScontato * (parseFloat(params.dazioPct) / 100 || 0)) : sc.dazio;
+    // 9AJ scontato (se richiesto)
+    const tasseNew = sconto.apply9AJ ? sc.tassePerPezzo * fattore : sc.tassePerPezzo;
+    // Base IVA scontata
+    let baseIvaNew = valStatScontato + dazioNew + tasseNew;
+    if (!sconto.applyDazio && !sconto.applyIva) baseIvaNew = sc.valoreStatistico + sc.dazio + sc.tassePerPezzo;
+    // IVA scontata
+    const ivaNew = sconto.applyIva ? (baseIvaNew * (parseFloat(params.ivaPct) / 100 || 0)) : sc.iva;
+    // Costo finale: torno a sommare tutto SUL VALORE REALE (FOB+nolo+aggiust) ma con tasse calcolate sui valori scontati
+    const totaleBollaNew = sc.valoreStatistico + dazioNew + tasseNew + ivaNew;
+    const costoFinaleNew = totaleBollaNew + sc.extraNoloPerPezzo + sc.serviziIvaPerPezzo + sc.commissioniPerPezzo + sc.pfuPezzo;
+    return {
+      ...sc,
+      dazio: dazioNew,
+      tassePerPezzo: tasseNew,
+      iva: ivaNew,
+      costoFinale: costoFinaleNew,
+      // Risparmio rispetto al reale
+      risparmio: sc.costoFinale - costoFinaleNew
+    };
+  };
+
   // ===== MODIFICA ARTICOLO =====
   // Aggiorna un singolo campo di un articolo (per editing inline)
   const updateItemField = (itemId, field, value) => {
@@ -1290,6 +1428,355 @@ export default function GestionaleImportazioni() {
   // Apre la modale di modifica
   const openEditItemModal = (item) => {
     setEditingItem({ ...item });
+  };
+
+  // ===== CONFRONTO SCENARI ARTICOLO SINGOLO (v2.2) =====
+  // Apre la modale "Confronto Scenari" per UN articolo specifico
+  const openArticleScenarioModal = (item) => {
+    const baseParams = item.origine === 'CN' ? getEffectiveParams(item.supplierId) : { ...chinaParams };
+    setArticleScenarioModal({
+      item,
+      scenarios: [
+        { id: 'sc_' + Date.now(), name: 'Scenario Standard', params: { ...baseParams }, color: '#1976d2' }
+      ]
+    });
+  };
+  // Aggiunge un nuovo scenario alla modale articolo
+  const addArticleScenario = () => {
+    if (!articleScenarioModal) return;
+    const colors = ['#1976d2', '#2e7d32', '#e65100', '#7b1fa2', '#c62828', '#00838f'];
+    const newColor = colors[articleScenarioModal.scenarios.length % colors.length];
+    const baseScenario = articleScenarioModal.scenarios[articleScenarioModal.scenarios.length - 1];
+    const newScenario = {
+      id: 'sc_' + Date.now(),
+      name: `Scenario ${articleScenarioModal.scenarios.length + 1}`,
+      params: { ...baseScenario.params },
+      color: newColor
+    };
+    setArticleScenarioModal({
+      ...articleScenarioModal,
+      scenarios: [...articleScenarioModal.scenarios, newScenario]
+    });
+  };
+  // Rimuove uno scenario
+  const removeArticleScenario = (id) => {
+    if (!articleScenarioModal) return;
+    if (articleScenarioModal.scenarios.length <= 1) { alert('Deve esserci almeno uno scenario'); return; }
+    setArticleScenarioModal({
+      ...articleScenarioModal,
+      scenarios: articleScenarioModal.scenarios.filter(s => s.id !== id)
+    });
+  };
+  // Aggiorna un parametro di uno scenario
+  const updateArticleScenarioParam = (scenId, key, value) => {
+    if (!articleScenarioModal) return;
+    setArticleScenarioModal({
+      ...articleScenarioModal,
+      scenarios: articleScenarioModal.scenarios.map(s =>
+        s.id === scenId ? { ...s, params: { ...s.params, [key]: value } } : s
+      )
+    });
+  };
+  // Rinomina scenario
+  const renameArticleScenario = (scenId, newName) => {
+    if (!articleScenarioModal) return;
+    setArticleScenarioModal({
+      ...articleScenarioModal,
+      scenarios: articleScenarioModal.scenarios.map(s =>
+        s.id === scenId ? { ...s, name: newName } : s
+      )
+    });
+  };
+  // Applica preset rapido a uno scenario (es. "Cina 40' HC")
+  const applyPresetToArticleScenario = (scenId, presetKey) => {
+    if (!articleScenarioModal) return;
+    const preset = NOLO_PRESETS[presetKey];
+    if (!preset) return;
+    setArticleScenarioModal({
+      ...articleScenarioModal,
+      scenarios: articleScenarioModal.scenarios.map(s =>
+        s.id === scenId ? {
+          ...s,
+          params: {
+            ...s.params,
+            noloMare: preset.noloMare,
+            fuelSurcharge: preset.fuelSurcharge,
+            ics2Usd: preset.ics2Usd,
+            ecaSurcharge: preset.ecaSurcharge,
+            noloPreset: presetKey
+          }
+        } : s
+      )
+    });
+  };
+  // Calcola scomposizione di TUTTI gli scenari per l'articolo della modale
+  const articleScenarioCalcs = useMemo(() => {
+    if (!articleScenarioModal) return [];
+    const it = articleScenarioModal.item;
+    const simItem = {
+      prezzoUsd: it.prezzoOriginale,
+      qty: it.qtyImportata || it.qtyDisponibile || 1,
+      pfuFascia: it.pfuFascia || '7_15'
+    };
+    return articleScenarioModal.scenarios.map(s => {
+      const qtyRif = parseFloat(s.params.qtyTotale) || simItem.qty || 1;
+      const sc = calcolaScomposizione(simItem, { ...s.params, qtyTotale: qtyRif });
+      return { scenario: s, scomposizione: sc };
+    });
+  }, [articleScenarioModal]);
+
+  // Export scenari articolo in PDF
+  const exportArticleScenariosPdf = (modal) => {
+    if (!modal) return;
+    const it = modal.item;
+    const calcs = modal.scenarios.map(s => {
+      const simItem = { prezzoUsd: it.prezzoOriginale, qty: it.qtyImportata || it.qtyDisponibile || 1, pfuFascia: it.pfuFascia || '7_15' };
+      const qtyRif = parseFloat(s.params.qtyTotale) || simItem.qty || 1;
+      return { scenario: s, scomposizione: calcolaScomposizione(simItem, { ...s.params, qtyTotale: qtyRif }) };
+    });
+    const win = window.open('', '_blank');
+    if (!win) { alert('Abilita popup'); return; }
+    const dataStr = new Date().toLocaleDateString('it-IT');
+    const colHead = calcs.map(c => `<th style="background:${c.scenario.color};color:#fff">${c.scenario.name}</th>`).join('');
+    const rowsHtml = [
+      { key: 'fobEur', label: 'FOB €' },
+      { key: 'noloPerPezzo', label: 'Nolo /pz' },
+      { key: 'aggPerPezzo', label: 'Aggiust /pz' },
+      { key: 'valoreStatistico', label: 'CIF (v.46)', bold: true },
+      { key: 'dazio', label: 'Dazio' },
+      { key: 'tassePerPezzo', label: '9AJ' },
+      { key: 'iva', label: 'IVA' },
+      { key: 'extraNoloPerPezzo', label: 'Extra art.74' },
+      { key: 'serviziIvaPerPezzo', label: 'Servizi IVA' },
+      { key: 'commissioniPerPezzo', label: 'Commissioni' },
+      { key: 'pfuPezzo', label: 'PFU' },
+      { key: 'costoFinale', label: 'COSTO FINALE', highlight: true }
+    ].map(row => {
+      const cells = calcs.map(c => `<td class="num" style="${row.highlight ? 'background:#fff9c4;font-weight:700' : ''}">€ ${fmtEur(c.scomposizione[row.key] || 0)}</td>`).join('');
+      return `<tr style="${row.highlight ? 'background:#fff9c4;font-size:13px' : ''}"><td style="${row.bold || row.highlight ? 'font-weight:700' : ''}">${row.label}</td>${cells}</tr>`;
+    }).join('');
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Confronto Scenari ${it.marca} ${it.misura}</title>
+<style>
+  @page { size: A4 landscape; margin: 10mm; }
+  body { font-family: 'Segoe UI',Arial,sans-serif; font-size: 11px; color: #263238; padding: 8px; }
+  h1 { color: #4a148c; border-bottom: 2px solid #4a148c; padding-bottom: 6px; margin: 0 0 8px 0; }
+  .info { background: #f3e5f5; padding: 8px; margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+  th, td { padding: 5px 8px; border: 1px solid #cfd8dc; }
+  th { background: #37474f; color: #fff; }
+  td.num { text-align: right; font-family: 'Consolas',monospace; }
+  .no-print-btn { position: fixed; bottom: 15px; right: 15px; background: #4a148c; color: #fff; border: none; padding: 10px 20px; cursor: pointer; font-weight: bold; }
+  @media print { .no-print-btn { display: none; } }
+</style></head><body>
+<h1>🔬 Confronto Scenari — ${it.marca} ${it.modello || ''} ${it.misura || ''}</h1>
+<div class="info">
+  <b>Data:</b> ${dataStr} · <b>Articolo:</b> ${it.currency || 'EUR'} ${fmtEur(it.prezzoOriginale)} · <b>Origine:</b> ${it.origine}
+</div>
+<table>
+  <thead><tr><th>Voce</th>${colHead}</tr></thead>
+  <tbody>${rowsHtml}</tbody>
+</table>
+<button class="no-print-btn" onclick="window.print()">🖨 STAMPA / SALVA PDF</button>
+</body></html>`;
+    win.document.write(html);
+    win.document.close();
+  };
+
+  // Export scenari articolo in Excel
+  const exportArticleScenariosExcel = (modal) => {
+    if (!modal) return;
+    const it = modal.item;
+    const calcs = modal.scenarios.map(s => {
+      const simItem = { prezzoUsd: it.prezzoOriginale, qty: it.qtyImportata || it.qtyDisponibile || 1, pfuFascia: it.pfuFascia || '7_15' };
+      const qtyRif = parseFloat(s.params.qtyTotale) || simItem.qty || 1;
+      return { scenario: s, scomposizione: calcolaScomposizione(simItem, { ...s.params, qtyTotale: qtyRif }) };
+    });
+    const wb = XLSX.utils.book_new();
+    const data = [
+      ['Voce', ...modal.scenarios.map(s => s.name)],
+      ['FOB €', ...calcs.map(c => c.scomposizione.fobEur)],
+      ['Nolo /pz', ...calcs.map(c => c.scomposizione.noloPerPezzo)],
+      ['Aggiust /pz', ...calcs.map(c => c.scomposizione.aggPerPezzo)],
+      ['CIF (v.46)', ...calcs.map(c => c.scomposizione.valoreStatistico)],
+      ['Dazio', ...calcs.map(c => c.scomposizione.dazio)],
+      ['9AJ', ...calcs.map(c => c.scomposizione.tassePerPezzo)],
+      ['IVA', ...calcs.map(c => c.scomposizione.iva)],
+      ['Extra art.74', ...calcs.map(c => c.scomposizione.extraNoloPerPezzo)],
+      ['Servizi IVA', ...calcs.map(c => c.scomposizione.serviziIvaPerPezzo)],
+      ['Commissioni', ...calcs.map(c => c.scomposizione.commissioniPerPezzo)],
+      ['PFU', ...calcs.map(c => c.scomposizione.pfuPezzo)],
+      ['COSTO FINALE', ...calcs.map(c => c.scomposizione.costoFinale)]
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    ws['!cols'] = [{ wch: 18 }, ...calcs.map(() => ({ wch: 16 }))];
+    XLSX.utils.book_append_sheet(wb, ws, 'Confronto');
+    XLSX.writeFile(wb, `confronto_scenari_${(it.marca || '').replace(/[^a-z0-9]/gi, '_')}_${(it.misura || '').replace(/[^a-z0-9]/gi, '_')}.xlsx`);
+  };
+
+  // ===== EXPORT WIZARD MASTER (v2.2) =====
+  // Esegue export in base alla configurazione del wizard
+  const runExportWizard = (config) => {
+    if (!config) return;
+    const { section, format, options } = config;
+    if (section === 'selezione') exportSelezioneAdvanced(format, options);
+    else if (section === 'catalogo') exportCatalogoAdvanced(format, options);
+    else if (section === 'sizelists') {
+      if (sizeLists.length === 0) { alert('Nessun listino misure'); return; }
+      const id = options.sizeListId || activeSizeListId || sizeLists[0]?.id;
+      const list = sizeLists.find(l => l.id === id);
+      if (!list) { alert('Listino non trovato'); return; }
+      if (format === 'pdf') exportListinoPdf(list);
+      else exportListinoExcel(list);
+    } else if (section === 'bolle') {
+      alert('Per esportare una bolla specifica, usala dalla sezione "Bolle Doganali"');
+    }
+    setExportWizard(null);
+  };
+
+  // Export Selezione (PDF o Excel) con scomposizione + eventuali scenari
+  const exportSelezioneAdvanced = (format, options) => {
+    if (selectedItems.length === 0) { alert('Selezione vuota'); return; }
+    if (format === 'excel') {
+      const wb = XLSX.utils.book_new();
+      // Foglio articoli con scomposizione
+      const rows = selectedItems.map((it, i) => {
+        const sc = it.origine === 'CN' && scomposizioneCatalogo[it.id] ? scomposizioneCatalogo[it.id] : null;
+        return {
+          '#': i + 1,
+          'Origine': it.origine,
+          'Marca': it.marca,
+          'Modello': it.modello || '',
+          'Misura': it.misura || '',
+          'Fornitore': it.supplierName,
+          'Q.tà richiesta': it.qtyRichiesta || 0,
+          'Prezzo orig.': it.prezzoOriginale || 0,
+          'Valuta': it.currency || 'EUR',
+          ...(options.includeScomposizione && sc ? {
+            'FOB €': sc.fobEur, 'Nolo €': sc.noloPerPezzo, 'CIF €': sc.valoreStatistico,
+            'Dazio €': sc.dazio, '9AJ €': sc.tassePerPezzo, 'IVA €': sc.iva,
+            'Extra €': sc.extraNoloPerPezzo, 'Servizi €': sc.serviziIvaPerPezzo,
+            'Comm €': sc.commissioniPerPezzo, 'PFU €': sc.pfuPezzo
+          } : {}),
+          'Costo finale /pz €': sc ? sc.costoFinale : (parseFloat(it.prezzoFinale) || 0),
+          'Subtotale €': (sc ? sc.costoFinale : (parseFloat(it.prezzoFinale) || 0)) * (it.qtyRichiesta || 0)
+        };
+      });
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, 'Selezione');
+      // Foglio scenari (se presenti e richiesti)
+      if (options.includeScenarios && selScenarios.length > 0) {
+        const scenRows = selScenarios.map((s, i) => ({
+          '#': i + 1, 'Nome scenario': s.name,
+          'Cambio': s.params?.tassoEurUsd || '',
+          'Nolo $': s.params?.noloMare || '',
+          'Dazio %': s.params?.dazioPct || '',
+          'IVA %': s.params?.ivaPct || ''
+        }));
+        const wsSc = XLSX.utils.json_to_sheet(scenRows);
+        XLSX.utils.book_append_sheet(wb, wsSc, 'Scenari');
+      }
+      XLSX.writeFile(wb, `selezione_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } else {
+      // PDF
+      const win = window.open('', '_blank');
+      if (!win) { alert('Abilita popup'); return; }
+      const dataStr = new Date().toLocaleDateString('it-IT');
+      const totQty = selectedItems.reduce((s, i) => s + (i.qtyRichiesta || 0), 0);
+      const rowsHtml = selectedItems.map((it, i) => {
+        const sc = it.origine === 'CN' && scomposizioneCatalogo[it.id] ? scomposizioneCatalogo[it.id] : null;
+        const cost = sc ? sc.costoFinale : (parseFloat(it.prezzoFinale) || 0);
+        const sub = cost * (it.qtyRichiesta || 0);
+        const scomp = (options.includeScomposizione && sc) ?
+          `<td class="num">${fmtEur(sc.fobEur)}</td><td class="num">${fmtEur(sc.noloPerPezzo)}</td><td class="num">${fmtEur(sc.valoreStatistico)}</td><td class="num">${fmtEur(sc.dazio)}</td><td class="num">${fmtEur(sc.iva)}</td>` : '';
+        return `<tr>
+          <td>${i + 1}</td><td>${it.origine}</td><td><b>${it.marca}</b></td>
+          <td>${it.modello || ''}</td><td>${it.misura || ''}</td><td>${it.supplierName}</td>
+          <td class="num">${it.qtyRichiesta || 0}</td>
+          ${scomp}
+          <td class="num">€ ${fmtEur(cost)}</td>
+          <td class="num"><b>€ ${fmtEur(sub)}</b></td>
+        </tr>`;
+      }).join('');
+      const totale = selectedItems.reduce((s, it) => {
+        const sc = it.origine === 'CN' && scomposizioneCatalogo[it.id] ? scomposizioneCatalogo[it.id] : null;
+        const cost = sc ? sc.costoFinale : (parseFloat(it.prezzoFinale) || 0);
+        return s + cost * (it.qtyRichiesta || 0);
+      }, 0);
+      const headerScomp = options.includeScomposizione ? `<th>FOB €</th><th>Nolo €</th><th>CIF €</th><th>Dazio €</th><th>IVA €</th>` : '';
+      const colSpan = 7 + (options.includeScomposizione ? 5 : 0) + 1;
+      const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Selezione</title>
+<style>
+  @page { size: A4 landscape; margin: 10mm; }
+  body { font-family: 'Segoe UI',Arial,sans-serif; font-size: 10px; color: #263238; padding: 8px; }
+  h1 { color: #0d47a1; border-bottom: 2px solid #0d47a1; padding-bottom: 6px; margin: 0 0 8px 0; }
+  .info { background: #e3f2fd; padding: 6px; margin-bottom: 10px; font-size: 11px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { background: #37474f; color: #fff; padding: 5px; text-align: left; font-size: 10px; }
+  td { padding: 4px 5px; border-bottom: 1px solid #cfd8dc; font-size: 10px; }
+  td.num { text-align: right; font-family: 'Consolas',monospace; }
+  .tot { background: #1976d2; color: #fff; font-weight: bold; }
+  .tot td { color: #fff; }
+  .no-print-btn { position: fixed; bottom: 15px; right: 15px; background: #1976d2; color: #fff; border: none; padding: 10px 20px; cursor: pointer; }
+  @media print { .no-print-btn { display: none; } }
+</style></head><body>
+<h1>📋 Selezione Articoli</h1>
+<div class="info"><b>Data:</b> ${dataStr} · <b>Articoli:</b> ${selectedItems.length} · <b>Q.tà totale:</b> ${totQty} pezzi</div>
+<table>
+  <thead><tr>
+    <th>#</th><th>Or.</th><th>Marca</th><th>Modello</th><th>Misura</th><th>Fornitore</th><th>Qty</th>
+    ${headerScomp}<th>Costo /pz €</th><th>Subtotale €</th>
+  </tr></thead>
+  <tbody>${rowsHtml}</tbody>
+  <tfoot><tr class="tot"><td colspan="${colSpan - 1}">TOTALE ORDINE</td><td class="num">€ ${fmtEur(totale)}</td></tr></tfoot>
+</table>
+<button class="no-print-btn" onclick="window.print()">🖨 STAMPA / SALVA PDF</button>
+</body></html>`;
+      win.document.write(html);
+      win.document.close();
+    }
+  };
+
+  // Export Catalogo (PDF o Excel) con opzioni
+  const exportCatalogoAdvanced = (format, options) => {
+    const items = options.useFiltered ? filteredItems : allItems;
+    if (items.length === 0) { alert('Nessun articolo'); return; }
+    if (format === 'excel') {
+      const wb = XLSX.utils.book_new();
+      const rows = items.map((it, i) => {
+        const sc = it.origine === 'CN' && scomposizioneCatalogo[it.id] ? scomposizioneCatalogo[it.id] : null;
+        return {
+          '#': i + 1, 'Origine': it.origine, 'Marca': it.marca, 'Modello': it.modello || '',
+          'Misura': it.misura || '', 'Fornitore': it.supplierName, 'Q.tà': it.qtyDisponibile || 0,
+          'Prezzo orig.': it.prezzoOriginale, 'Valuta': it.currency,
+          ...(options.includeScomposizione && sc ? {
+            'FOB €': sc.fobEur, 'Nolo €': sc.noloPerPezzo, 'CIF €': sc.valoreStatistico,
+            'Dazio €': sc.dazio, 'IVA €': sc.iva, 'Extra €': sc.extraNoloPerPezzo,
+            'Servizi €': sc.serviziIvaPerPezzo, 'PFU €': sc.pfuPezzo
+          } : {}),
+          'Totale €': sc ? sc.costoFinale : (parseFloat(it.prezzoFinale) || 0)
+        };
+      });
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, 'Catalogo');
+      XLSX.writeFile(wb, `catalogo_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } else {
+      // PDF rapido del catalogo (limitato a 100 articoli per PDF leggibile)
+      if (items.length > 100 && !confirm(`${items.length} articoli: il PDF sarà molto lungo. Continuare?`)) return;
+      const win = window.open('', '_blank');
+      if (!win) return;
+      const rowsHtml = items.slice(0, 200).map((it, i) => {
+        const sc = it.origine === 'CN' && scomposizioneCatalogo[it.id] ? scomposizioneCatalogo[it.id] : null;
+        const cost = sc ? sc.costoFinale : (parseFloat(it.prezzoFinale) || 0);
+        return `<tr><td>${i + 1}</td><td>${it.origine}</td><td>${it.marca}</td><td>${it.misura || ''}</td><td>${it.supplierName}</td><td class="num">${it.qtyDisponibile || 0}</td><td class="num">€ ${fmtEur(cost)}</td></tr>`;
+      }).join('');
+      const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Catalogo</title>
+<style>@page{size:A4;margin:10mm}body{font-family:'Segoe UI',Arial,sans-serif;font-size:10px;padding:8px}h1{color:#0d47a1;border-bottom:2px solid #0d47a1;padding-bottom:5px}table{width:100%;border-collapse:collapse}th{background:#37474f;color:#fff;padding:5px;text-align:left}td{padding:3px 5px;border-bottom:1px solid #cfd8dc}td.num{text-align:right;font-family:'Consolas',monospace}.no-print-btn{position:fixed;bottom:15px;right:15px;background:#1976d2;color:#fff;border:none;padding:10px 20px;cursor:pointer}@media print{.no-print-btn{display:none}}</style></head>
+<body><h1>📚 Catalogo</h1>
+<table><thead><tr><th>#</th><th>Or.</th><th>Marca</th><th>Misura</th><th>Fornitore</th><th>Qty</th><th>Totale</th></tr></thead>
+<tbody>${rowsHtml}</tbody></table>
+<button class="no-print-btn" onclick="window.print()">🖨 STAMPA / SALVA PDF</button></body></html>`;
+      win.document.write(html); win.document.close();
+    }
   };
 
   // ===== PANNELLO CONFRONTO =====
@@ -1367,7 +1854,28 @@ export default function GestionaleImportazioni() {
     }
     const margine = totVendita - totCosto;
     const marginePct = totCosto > 0 ? (margine / totCosto * 100) : 0;
-    return { totFobEur, totNolo, totCif, totDazio, totIva, totExtra, totServizi, totPfu, totCosto, totVendita, totQty, margine, marginePct };
+
+    // === CALCOLO CONTAINER FILL (v2.3) ===
+    // Somma di (qty / capacita_40HQ) per ogni articolo CN della selezione
+    let totFill = 0;
+    for (const it of selectedItems) {
+      if (it.origine !== 'CN') continue;
+      const cap = getCapacita40HQ(it);
+      if (cap > 0) totFill += (it.qtyRichiesta || 0) / cap;
+    }
+    // Stima container necessari: 0.43 = 1×20', 1.00 = 1×40HQ
+    let containerInfo = '';
+    let cnt40 = Math.floor(totFill);
+    let resto = totFill - cnt40;
+    let cnt20 = 0;
+    if (resto >= 0.43) { cnt40 += 1; }  // se resto >= 43%, va su un altro 40
+    else if (resto > 0.05) { cnt20 = 1; }  // se piccolo va su 20'
+    if (cnt40 === 0 && cnt20 === 0 && totFill > 0) cnt20 = 1;
+    if (cnt40 > 0 && cnt20 > 0) containerInfo = `${cnt40}× 40'HQ + ${cnt20}× 20'`;
+    else if (cnt40 > 0) containerInfo = `${cnt40}× 40'HQ`;
+    else if (cnt20 > 0) containerInfo = `${cnt20}× 20' BOX`;
+
+    return { totFobEur, totNolo, totCif, totDazio, totIva, totExtra, totServizi, totPfu, totCosto, totVendita, totQty, margine, marginePct, totFill, containerInfo };
   }, [selectedItems, scomposizioneSelezione]);
 
   // ===== HELPER SIMULAZIONE SELEZIONE =====
@@ -1486,6 +1994,47 @@ export default function GestionaleImportazioni() {
       .filter(k => COLONNE_LABELS[k] && k !== 'valoreStatistico')
       .map(k => COLONNE_LABELS[k]);
   }, [hiddenColumns]);
+
+  // ===== VIEW MODE LOGIC (v2.2) =====
+  // Colonne nascoste IMPLICITAMENTE da viewMode (oltre a quelle nascoste manualmente)
+  const VIEWMODE_HIDDEN = useMemo(() => {
+    if (viewMode === 'compact') {
+      // Compatta: nasconde colonne extra, tiene CIF, Dazio, IVA, PFU, Totale
+      return ['fobEur', 'noloPerPezzo', 'aggPerPezzo', 'tassePerPezzo', 'extraNoloPerPezzo', 'serviziIvaPerPezzo', 'commissioniPerPezzo'];
+    }
+    if (viewMode === 'price-only') {
+      // Solo prezzo: nasconde TUTTO tranne il totale (e PFU per riferimento... ma tu hai detto solo prezzo)
+      return ['fobEur', 'noloPerPezzo', 'aggPerPezzo', 'valoreStatistico', 'dazio', 'tassePerPezzo', 'iva', 'extraNoloPerPezzo', 'serviziIvaPerPezzo', 'commissioniPerPezzo', 'pfu'];
+    }
+    return []; // detail: nessuna nascosta
+  }, [viewMode]);
+
+  // Colonna effettivamente visibile = NON in hiddenColumns AND NON in VIEWMODE_HIDDEN
+  const isColumnVisible = (colKey) => {
+    if (hiddenColumns.includes(colKey)) return false;
+    if (VIEWMODE_HIDDEN.includes(colKey)) return false;
+    return true;
+  };
+
+  // Set globale di colonne nascoste (manuali + da viewMode) — usato per il calcolo del totale filtrato
+  const allHiddenColumns = useMemo(() => {
+    return Array.from(new Set([...hiddenColumns, ...VIEWMODE_HIDDEN]));
+  }, [hiddenColumns, VIEWMODE_HIDDEN]);
+
+  // Quando viewMode è "compact" o "price-only" il totale NON deve essere ricalcolato escludendo le voci nascoste
+  // (perché viewMode è solo "vista", non "filtro simulativo"). Solo le hiddenColumns manuali filtrano il totale.
+  const calcTotaleFiltratoView = (sc) => {
+    if (!sc) return 0;
+    let totale = sc.costoFinale;
+    for (const colKey of hiddenColumns) {
+      // SOLO le manuali, non quelle da viewMode
+      const compKey = COLONNE_TO_COMPONENT[colKey];
+      if (!compKey) continue;
+      totale -= parseFloat(sc[compKey]) || 0;
+    }
+    return totale;
+  };
+
 
   // Calcola il prezzo finale per una misura del listino, dato un fornitore
   const getPrezzoListino = (misura, supplierId) => {
@@ -2881,6 +3430,14 @@ export default function GestionaleImportazioni() {
 
         /* Input inline edit nel catalogo */
         .inline-edit-inp { width: 70px; height: 22px; border: 1px solid transparent; padding: 0 4px; font-size: 11px; font-family: 'Consolas', monospace; text-align: right; background: transparent; color: inherit; transition: background 0.15s, border-color 0.15s; }
+
+        /* ===== VIEW MODE BUTTONS (v2.2) ===== */
+        .view-mode-group { display: inline-flex; border: 1px solid #90a4ae; border-radius: 3px; overflow: hidden; background: #eceff1; }
+        .vm-btn { padding: 4px 10px; background: transparent; border: none; border-right: 1px solid #cfd8dc; font-size: 11px; cursor: pointer; color: #455a64; transition: background 0.15s; font-weight: 600; height: 24px; }
+        .vm-btn:last-child { border-right: none; }
+        .vm-btn:hover { background: #cfd8dc; }
+        .vm-btn.active { background: linear-gradient(to bottom, #1976d2, #0d47a1); color: #fff; }
+        .vm-btn.active:hover { background: linear-gradient(to bottom, #1565c0, #0a3d91); }
         .inline-edit-inp:hover { background: #fff9c4; border-color: #ffd54f; }
         .inline-edit-inp:focus { background: #fff; border-color: #1976d2; outline: 1px solid #1976d2; }
 
@@ -2937,7 +3494,7 @@ export default function GestionaleImportazioni() {
 
       {/* MENU BAR */}
       <div className="menubar" onMouseLeave={() => setOpenMenu(null)}>
-        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v2.1</div>
+        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v2.3</div>
 
         {/* ARCHIVIO */}
         <div className={`menubar-item ${openMenu === 'archivio' ? 'open' : ''}`} onClick={() => setOpenMenu(openMenu === 'archivio' ? null : 'archivio')}>
@@ -2980,8 +3537,14 @@ export default function GestionaleImportazioni() {
                 <Search size={12} /> Azzera Filtri Catalogo
               </div>
               <div className="menu-dd-sep"></div>
-              <div className="menu-dd-item" onClick={() => menuAction(() => setCompactView(!compactView))}>
-                <List size={12} /> Vista Compatta: {compactView ? 'ON' : 'OFF'}
+              <div className="menu-dd-item" onClick={() => menuAction(() => setViewMode('detail'))}>
+                <List size={12} /> {viewMode === 'detail' ? '☑' : '☐'} Vista Dettaglio
+              </div>
+              <div className="menu-dd-item" onClick={() => menuAction(() => setViewMode('compact'))}>
+                <List size={12} /> {viewMode === 'compact' ? '☑' : '☐'} Vista Compatta
+              </div>
+              <div className="menu-dd-item" onClick={() => menuAction(() => setViewMode('price-only'))}>
+                <List size={12} /> {viewMode === 'price-only' ? '☑' : '☐'} Solo Prezzo
               </div>
             </div>
           )}
@@ -3011,8 +3574,14 @@ export default function GestionaleImportazioni() {
                 <FileText size={12} /> Bolle Doganali <span className="menu-dd-badge">{bolle.length}</span>
               </div>
               <div className="menu-dd-sep"></div>
-              <div className="menu-dd-item" onClick={() => menuAction(() => setCompactView(!compactView))}>
-                <List size={12} /> {compactView ? '☑' : '☐'} Vista Compatta
+              <div className="menu-dd-item" onClick={() => menuAction(() => setViewMode('detail'))}>
+                <List size={12} /> {viewMode === 'detail' ? '☑' : '☐'} Dettaglio (tutte colonne)
+              </div>
+              <div className="menu-dd-item" onClick={() => menuAction(() => setViewMode('compact'))}>
+                <List size={12} /> {viewMode === 'compact' ? '☑' : '☐'} Compatta (solo principali)
+              </div>
+              <div className="menu-dd-item" onClick={() => menuAction(() => setViewMode('price-only'))}>
+                <List size={12} /> {viewMode === 'price-only' ? '☑' : '☐'} Solo Prezzo
               </div>
             </div>
           )}
@@ -3032,8 +3601,13 @@ export default function GestionaleImportazioni() {
                 <span className="menu-dd-badge">{selectedItems.filter(i => i.origine === 'CN').length}</span>
               </div>
               <div className="menu-dd-sep"></div>
+              <div className="menu-dd-item" onClick={() => menuAction(() => setExportWizard({ section: 'selezione', format: 'pdf', options: { includeScomposizione: true, includeScenarios: true } }))} style={{ background: '#fff3e0' }}>
+                <Download size={12} /> <b>Esporta (Wizard PDF/Excel)</b>
+                <span className="menu-dd-hint">scegli cosa</span>
+              </div>
+              <div className="menu-dd-sep"></div>
               <div className="menu-dd-item" onClick={() => menuAction(exportCatalogoExcel)}>
-                <FileSpreadsheet size={12} /> Export Catalogo Excel
+                <FileSpreadsheet size={12} /> Export Catalogo Excel (rapido)
               </div>
               <div className="menu-dd-item" onClick={() => menuAction(exportParams)}>
                 <Download size={12} /> Backup Parametri
@@ -3314,13 +3888,21 @@ export default function GestionaleImportazioni() {
                     </div>
                     <div className="fld">
                       <label>&nbsp;</label>
-                      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                      <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
                         <button className="tbtn" onClick={() => { setSearchQuery(''); setFilterMarca(''); setFilterSupplier(''); setFilterOrigine(''); }}>
                           <X size={12} /> Azzera
                         </button>
-                        <button className={`tbtn ${compactView ? 'primary' : ''}`} onClick={() => setCompactView(!compactView)} title="Alterna vista compatta/normale">
-                          {compactView ? '≡ Normale' : '≡ Compatta'}
-                        </button>
+                        <div className="view-mode-group" title="Modalità vista">
+                          <button className={`vm-btn ${viewMode === 'detail' ? 'active' : ''}`} onClick={() => setViewMode('detail')} title="Dettaglio: tutte le colonne scomposte">
+                            ≡≡≡ Dettaglio
+                          </button>
+                          <button className={`vm-btn ${viewMode === 'compact' ? 'active' : ''}`} onClick={() => setViewMode('compact')} title="Compatta: solo CIF, Dazio, IVA, PFU, Totale">
+                            ≡≡ Compatta
+                          </button>
+                          <button className={`vm-btn ${viewMode === 'price-only' ? 'active' : ''}`} onClick={() => setViewMode('price-only')} title="Solo Prezzo: nasconde tutte le scomposizioni">
+                            ≡ Solo Prezzo
+                          </button>
+                        </div>
                         {hiddenColumns.length > 0 && (
                           <button className="tbtn" onClick={showAllColumns} title="Riporta tutte le colonne visibili" style={{ background: '#fff59d', borderColor: '#f57f17', color: '#bf360c' }}>
                             👁 Mostra tutte ({hiddenColumns.length} nascoste)
@@ -3359,6 +3941,48 @@ export default function GestionaleImportazioni() {
                     </div>
                   )}
 
+                  {/* Pannello Simulazione Sconto Imponibile (v2.3) */}
+                  <div style={{ background: scontoImponibile ? '#fce4ec' : '#f5f7fa', border: scontoImponibile ? '2px solid #c2185b' : '1px solid #cfd8dc', padding: 8, margin: '0 8px 6px 8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <label style={{ fontSize: 12, fontWeight: 700, color: scontoImponibile ? '#880e4f' : '#37474f', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={!!scontoImponibile} onChange={e => {
+                            if (e.target.checked) setScontoImponibile({ pct: 30, applyDazio: true, applyIva: true, apply9AJ: false });
+                            else setScontoImponibile(null);
+                          }} />
+                          {' '}🧮 Simulazione Sconto Imponibile
+                        </label>
+                        {scontoImponibile && (
+                          <>
+                            <input type="number" className="ctl" min="0" max="99" step="1" value={scontoImponibile.pct}
+                                   onChange={e => setScontoImponibile({ ...scontoImponibile, pct: parseFloat(e.target.value) || 0 })}
+                                   style={{ width: 70, height: 24, fontSize: 12 }} />
+                            <span style={{ fontSize: 12, color: '#880e4f', fontWeight: 600 }}>% sconto sull'imponibile</span>
+                          </>
+                        )}
+                      </div>
+                      {scontoImponibile && (
+                        <div style={{ display: 'flex', gap: 10, fontSize: 11, color: '#880e4f', alignItems: 'center', flexWrap: 'wrap' }}>
+                          <label style={{ cursor: 'pointer' }}>
+                            <input type="checkbox" checked={scontoImponibile.applyDazio} onChange={e => setScontoImponibile({ ...scontoImponibile, applyDazio: e.target.checked })} /> Dazio
+                          </label>
+                          <label style={{ cursor: 'pointer' }}>
+                            <input type="checkbox" checked={scontoImponibile.applyIva} onChange={e => setScontoImponibile({ ...scontoImponibile, applyIva: e.target.checked })} /> IVA
+                          </label>
+                          <label style={{ cursor: 'pointer' }}>
+                            <input type="checkbox" checked={scontoImponibile.apply9AJ || false} onChange={e => setScontoImponibile({ ...scontoImponibile, apply9AJ: e.target.checked })} /> 9AJ
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                    {scontoImponibile && (
+                      <div style={{ fontSize: 10, color: '#880e4f', marginTop: 4, fontStyle: 'italic' }}>
+                        💡 Le voci selezionate vengono ricalcolate su un imponibile ridotto del {scontoImponibile.pct}%. Il valore di FOB e nolo restano invariati.
+                        Il valore in dogana deve corrispondere alla fattura realmente emessa dal fornitore.
+                      </div>
+                    )}
+                  </div>
+
                   {/* Barra pannello confronto */}
                   {compareItemIds.length > 0 && (
                     <div style={{ background: '#e3f2fd', border: '1px solid #1976d2', padding: 8, margin: '0 8px 6px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
@@ -3377,7 +4001,7 @@ export default function GestionaleImportazioni() {
                   )}
 
                   <div className="grid-wrap">
-                    <table className={`grid ${compactView ? 'compact' : ''} ${activeCatalogTab !== 'eu' ? 'scomposto' : ''}`}>
+                    <table className={`grid ${viewMode !== 'detail' ? 'compact' : ''} ${activeCatalogTab !== 'eu' ? 'scomposto' : ''} vm-${viewMode}`}>
                       <thead>
                         <tr>
                           <th style={{ width: 26, textAlign: 'center', cursor: 'default' }}>Sel</th>
@@ -3390,26 +4014,28 @@ export default function GestionaleImportazioni() {
                           <th className="num" onClick={() => toggleSort('prezzoOriginale')} title="Prezzo originale (editabile cliccando)">Prezzo Orig.</th>
                           {/* Colonne scomposte — solo se stiamo mostrando CN */}
                           {activeCatalogTab !== 'eu' && <>
-                            {!hiddenColumns.includes('fobEur') && <th className="num col-cn col-clickable" title="Click per nascondere · FOB EUR = USD / cambio" onClick={() => toggleColumnVisibility('fobEur')}>FOB € <span className="hide-x">×</span></th>}
-                            {!hiddenColumns.includes('noloPerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere · Nolo per pezzo" onClick={() => toggleColumnVisibility('noloPerPezzo')}>Nolo € <span className="hide-x">×</span></th>}
-                            {!hiddenColumns.includes('aggPerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere · Aggiustamento v.45" onClick={() => toggleColumnVisibility('aggPerPezzo')}>Aggiust € <span className="hide-x">×</span></th>}
-                            {!hiddenColumns.includes('valoreStatistico') && <th className="num col-cn col-clickable" title="Click per nascondere · Valore Statistico CIF" onClick={() => toggleColumnVisibility('valoreStatistico')}>CIF € <span className="hide-x">×</span></th>}
-                            {!hiddenColumns.includes('dazio') && <th className="num col-cn col-clickable" title="Click per nascondere · Dazio A00 (4,5%)" onClick={() => toggleColumnVisibility('dazio')}>Dazio € <span className="hide-x">×</span></th>}
-                            {!hiddenColumns.includes('tassePerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere · 9AJ Diritto Marittimo" onClick={() => toggleColumnVisibility('tassePerPezzo')}>9AJ € <span className="hide-x">×</span></th>}
-                            {!hiddenColumns.includes('iva') && <th className="num col-cn col-clickable" title="Click per nascondere · IVA B00 (22%)" onClick={() => toggleColumnVisibility('iva')}>IVA € <span className="hide-x">×</span></th>}
-                            {!hiddenColumns.includes('extraNoloPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere · Extra Nolo art.74" onClick={() => toggleColumnVisibility('extraNoloPerPezzo')}>ExtraNolo € <span className="hide-x">×</span></th>}
-                            {!hiddenColumns.includes('serviziIvaPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere · Servizi con IVA" onClick={() => toggleColumnVisibility('serviziIvaPerPezzo')}>Servizi € <span className="hide-x">×</span></th>}
-                            {!hiddenColumns.includes('commissioniPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere · Commissioni" onClick={() => toggleColumnVisibility('commissioniPerPezzo')}>Comm € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('fobEur') && <th className="num col-cn col-clickable" title="Click per nascondere · FOB EUR = USD / cambio" onClick={() => toggleColumnVisibility('fobEur')}>FOB € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('noloPerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere · Nolo per pezzo" onClick={() => toggleColumnVisibility('noloPerPezzo')}>Nolo € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('aggPerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere · Aggiustamento v.45" onClick={() => toggleColumnVisibility('aggPerPezzo')}>Aggiust € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('valoreStatistico') && <th className="num col-cn col-clickable" title="Click per nascondere · Valore Statistico CIF" onClick={() => toggleColumnVisibility('valoreStatistico')}>CIF € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('dazio') && <th className="num col-cn col-clickable" title="Click per nascondere · Dazio A00 (4,5%)" onClick={() => toggleColumnVisibility('dazio')}>Dazio € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('tassePerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere · 9AJ Diritto Marittimo" onClick={() => toggleColumnVisibility('tassePerPezzo')}>9AJ € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('iva') && <th className="num col-cn col-clickable" title="Click per nascondere · IVA B00 (22%)" onClick={() => toggleColumnVisibility('iva')}>IVA € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('extraNoloPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere · Extra Nolo art.74" onClick={() => toggleColumnVisibility('extraNoloPerPezzo')}>ExtraNolo € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('serviziIvaPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere · Servizi con IVA" onClick={() => toggleColumnVisibility('serviziIvaPerPezzo')}>Servizi € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('commissioniPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere · Commissioni" onClick={() => toggleColumnVisibility('commissioniPerPezzo')}>Comm € <span className="hide-x">×</span></th>}
                           </>}
-                          {!hiddenColumns.includes('pfu') && <th className="num col-clickable" title="Click per nascondere · PFU" onClick={() => toggleColumnVisibility('pfu')}>PFU € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('pfu') && <th className="num col-clickable" title="Click per nascondere · PFU" onClick={() => toggleColumnVisibility('pfu')}>PFU € <span className="hide-x">×</span></th>}
+                          {activeCatalogTab !== 'eu' && <th className="num" title="Capacità container 40'HQ per questa misura (in pezzi)">Cap.40'HQ</th>}
                           <th className="num col-finale" onClick={() => toggleSort('prezzoFinale')}>TOTALE €</th>
                           <th style={{ width: 28, cursor: 'default' }} title="Aggiungi al pannello confronto">⊕</th>
                           <th style={{ width: 28, cursor: 'default' }} title="Modifica completa">✏️</th>
+                          <th style={{ width: 28, cursor: 'default' }} title="Confronto Scenari (with/without dazio, container...)">🔬</th>
                           <th style={{ width: 28, cursor: 'default' }} title="Simulatore">🔍</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredItems.slice(0, compactView ? 1500 : 500).map(item => {
+                        {filteredItems.slice(0, viewMode !== 'detail' ? 1500 : 500).map(item => {
                           const isSelected = selectedItems.some(i => i.id === item.id);
                           // Per articoli CN uso la scomposizione live, per EU i valori statici
                           const sc = item.origine === 'CN' ? scomposizioneCatalogo[item.id] : null;
@@ -3450,56 +4076,89 @@ export default function GestionaleImportazioni() {
                               {/* Colonne scomposte */}
                               {activeCatalogTab !== 'eu' && <>
                                 {item.origine === 'CN' && sc ? <>
-                                  {!hiddenColumns.includes('fobEur') && <td className="num col-cn">{fmtEur(sc.fobEur)}</td>}
-                                  {!hiddenColumns.includes('noloPerPezzo') && <td className="num col-cn">{fmtEur(sc.noloPerPezzo)}</td>}
-                                  {!hiddenColumns.includes('aggPerPezzo') && <td className="num col-cn">{fmtEur(sc.aggPerPezzo)}</td>}
-                                  {!hiddenColumns.includes('valoreStatistico') && <td className="num col-cn col-cif"><b>{fmtEur(sc.valoreStatistico)}</b></td>}
-                                  {!hiddenColumns.includes('dazio') && <td className="num col-cn">{fmtEur(sc.dazio)}</td>}
-                                  {!hiddenColumns.includes('tassePerPezzo') && <td className="num col-cn">{fmtEur(sc.tassePerPezzo)}</td>}
-                                  {!hiddenColumns.includes('iva') && <td className="num col-cn">{fmtEur(sc.iva)}</td>}
-                                  {!hiddenColumns.includes('extraNoloPerPezzo') && <td className="num col-cn col-extra">{fmtEur(sc.extraNoloPerPezzo)}</td>}
-                                  {!hiddenColumns.includes('serviziIvaPerPezzo') && <td className="num col-cn col-extra">{fmtEur(sc.serviziIvaPerPezzo)}</td>}
-                                  {!hiddenColumns.includes('commissioniPerPezzo') && <td className="num col-cn col-extra">{fmtEur(sc.commissioniPerPezzo)}</td>}
+                                  {isColumnVisible('fobEur') && <td className="num col-cn">{fmtEur(sc.fobEur)}</td>}
+                                  {isColumnVisible('noloPerPezzo') && <td className="num col-cn">{fmtEur(sc.noloPerPezzo)}</td>}
+                                  {isColumnVisible('aggPerPezzo') && <td className="num col-cn">{fmtEur(sc.aggPerPezzo)}</td>}
+                                  {isColumnVisible('valoreStatistico') && <td className="num col-cn col-cif"><b>{fmtEur(sc.valoreStatistico)}</b></td>}
+                                  {isColumnVisible('dazio') && <td className="num col-cn">{fmtEur(sc.dazio)}</td>}
+                                  {isColumnVisible('tassePerPezzo') && <td className="num col-cn">{fmtEur(sc.tassePerPezzo)}</td>}
+                                  {isColumnVisible('iva') && <td className="num col-cn">{fmtEur(sc.iva)}</td>}
+                                  {isColumnVisible('extraNoloPerPezzo') && <td className="num col-cn col-extra">{fmtEur(sc.extraNoloPerPezzo)}</td>}
+                                  {isColumnVisible('serviziIvaPerPezzo') && <td className="num col-cn col-extra">{fmtEur(sc.serviziIvaPerPezzo)}</td>}
+                                  {isColumnVisible('commissioniPerPezzo') && <td className="num col-cn col-extra">{fmtEur(sc.commissioniPerPezzo)}</td>}
                                 </> : <>
                                   {/* Articolo EU: colonne CN vuote */}
-                                  {!hiddenColumns.includes('fobEur') && <td className="num col-cn">—</td>}
-                                  {!hiddenColumns.includes('noloPerPezzo') && <td className="num col-cn">—</td>}
-                                  {!hiddenColumns.includes('aggPerPezzo') && <td className="num col-cn">—</td>}
-                                  {!hiddenColumns.includes('valoreStatistico') && <td className="num col-cn">—</td>}
-                                  {!hiddenColumns.includes('dazio') && <td className="num col-cn">—</td>}
-                                  {!hiddenColumns.includes('tassePerPezzo') && <td className="num col-cn">—</td>}
-                                  {!hiddenColumns.includes('iva') && <td className="num col-cn">—</td>}
-                                  {!hiddenColumns.includes('extraNoloPerPezzo') && <td className="num col-cn col-extra">—</td>}
-                                  {!hiddenColumns.includes('serviziIvaPerPezzo') && <td className="num col-cn col-extra">—</td>}
-                                  {!hiddenColumns.includes('commissioniPerPezzo') && <td className="num col-cn col-extra">—</td>}
+                                  {isColumnVisible('fobEur') && <td className="num col-cn">—</td>}
+                                  {isColumnVisible('noloPerPezzo') && <td className="num col-cn">—</td>}
+                                  {isColumnVisible('aggPerPezzo') && <td className="num col-cn">—</td>}
+                                  {isColumnVisible('valoreStatistico') && <td className="num col-cn">—</td>}
+                                  {isColumnVisible('dazio') && <td className="num col-cn">—</td>}
+                                  {isColumnVisible('tassePerPezzo') && <td className="num col-cn">—</td>}
+                                  {isColumnVisible('iva') && <td className="num col-cn">—</td>}
+                                  {isColumnVisible('extraNoloPerPezzo') && <td className="num col-cn col-extra">—</td>}
+                                  {isColumnVisible('serviziIvaPerPezzo') && <td className="num col-cn col-extra">—</td>}
+                                  {isColumnVisible('commissioniPerPezzo') && <td className="num col-cn col-extra">—</td>}
                                 </>}
                               </>}
-                              {!hiddenColumns.includes('pfu') && <td className="num">{fmtEur(sc ? sc.pfuPezzo : item.pfu)}</td>}
+                              {isColumnVisible('pfu') && <td className="num">{fmtEur(sc ? sc.pfuPezzo : item.pfu)}</td>}
+                              {activeCatalogTab !== 'eu' && (
+                                <td className="num" style={{ background: '#e1f5fe', color: '#01579b' }}>
+                                  {item.origine === 'CN' ? (
+                                    (() => {
+                                      const cap = getCapacita40HQ(item);
+                                      const qtyD = item.qtyDisponibile || 0;
+                                      const fillSingleArticle = cap > 0 ? (qtyD / cap) : 0;
+                                      return (
+                                        <span title={`Capacità 40'HQ: ${cap} pz${qtyD > 0 ? ` · La tua qty: ${qtyD} = ${(fillSingleArticle*100).toFixed(1)}% di un container` : ''}`}>
+                                          <b>{cap}</b>
+                                          {qtyD > 0 && cap > 0 && (
+                                            <div style={{ fontSize: 9, color: fillSingleArticle >= 0.95 ? '#1b5e20' : (fillSingleArticle >= 0.43 ? '#bf360c' : '#01579b') }}>
+                                              {(fillSingleArticle * 100).toFixed(0)}%
+                                            </div>
+                                          )}
+                                        </span>
+                                      );
+                                    })()
+                                  ) : '—'}
+                                </td>
+                              )}
                               <td className="num price-final col-finale">
                                 {(() => {
                                   // Per articoli CN con scomposizione, calcolo il totale filtrato
                                   let totVisible, totFull;
                                   if (sc) {
                                     totFull = sc.costoFinale;
-                                    totVisible = calcTotaleFiltrato(sc);
+                                    totVisible = calcTotaleFiltratoView(sc);
                                   } else {
                                     totFull = parseFloat(item.prezzoFinale) || 0;
                                     totVisible = totFull; // EU: nessun filtro
                                   }
                                   const filtered = Math.abs(totVisible - totFull) > 0.001;
+                                  // Calcolo scontato (v2.3) - solo per CN con sconto attivo
+                                  let scontato = null;
+                                  if (sc && scontoImponibile && item.origine === 'CN') {
+                                    const effParams = getEffectiveParams(item.supplierId);
+                                    scontato = calcolaScompConSconto(sc, scontoImponibile, effParams);
+                                  }
                                   return (
                                     <>
                                       <span style={{ color: filtered ? '#bf360c' : undefined }}>€ {fmtEur(totVisible)}</span>
+                                      {scontato && (
+                                        <div style={{ fontSize: 10, color: '#880e4f', fontWeight: 700, marginTop: 2, background: '#fce4ec', padding: '1px 3px', borderRadius: 2, border: '1px solid #c2185b' }} title={`Risparmio: € ${fmtEur(scontato.risparmio)}`}>
+                                          🧮 € {fmtEur(scontato.costoFinale)}
+                                          <span style={{ fontSize: 9, color: '#1b5e20', marginLeft: 4 }}>(-€{fmtEur(scontato.risparmio)})</span>
+                                        </div>
+                                      )}
                                       {filtered && (
                                         <span title={`Totale filtrato: voci escluse: ${voci_escluse_labels.join(', ')}\nTotale completo: € ${fmtEur(totFull)}`}
                                               style={{ fontSize: 8, marginLeft: 4, background: '#fff3e0', color: '#bf360c', padding: '1px 4px', border: '1px solid #ff9800', borderRadius: 2, fontWeight: 700 }}>
                                           ⚠ FILTRATO
                                         </span>
                                       )}
-                                      {!filtered && item.origine === 'CN' && !item.lastBollaId && (
+                                      {!filtered && !scontato && item.origine === 'CN' && !item.lastBollaId && (
                                         <span title="Prezzo stimato con parametri attuali" style={{ fontSize: 8, marginLeft: 4, background: '#fff3e0', color: '#e65100', padding: '1px 4px', border: '1px solid #ffb74d', borderRadius: 2, fontWeight: 700 }}>LIVE</span>
                                       )}
-                                      {!filtered && item.lastBollaId && (
+                                      {!filtered && !scontato && item.lastBollaId && (
                                         <span title="Prezzo aggiornato con bolla reale" style={{ fontSize: 8, marginLeft: 4, background: '#e8f5e9', color: '#1b5e20', padding: '1px 4px', border: '1px solid #66bb6a', borderRadius: 2, fontWeight: 700 }}>REALE</span>
                                       )}
                                     </>
@@ -3517,6 +4176,11 @@ export default function GestionaleImportazioni() {
                                 </button>
                               </td>
                               <td style={{ textAlign: 'center', padding: 2 }} onClick={e => e.stopPropagation()}>
+                                <button className="tbtn" onClick={() => openArticleScenarioModal(item)} title="Confronta questo articolo in scenari diversi (con/senza dazio, container diversi...)" style={{ padding: '1px 5px', height: 20, fontSize: 10, background: 'linear-gradient(to bottom,#ce93d8,#7b1fa2)', color: '#fff' }}>
+                                  🔬
+                                </button>
+                              </td>
+                              <td style={{ textAlign: 'center', padding: 2 }} onClick={e => e.stopPropagation()}>
                                 <button className="tbtn" onClick={() => openSimulatorFromItem(item)} title="Apri simulatore What-If per vedere la scomposizione prezzo" style={{ padding: '1px 5px', height: 20, fontSize: 10 }}>
                                   <Search size={10} />
                                 </button>
@@ -3526,9 +4190,9 @@ export default function GestionaleImportazioni() {
                         })}
                       </tbody>
                     </table>
-                    {filteredItems.length > (compactView ? 1500 : 500) && (
+                    {filteredItems.length > (viewMode !== 'detail' ? 1500 : 500) && (
                       <div style={{ padding: 8, textAlign: 'center', fontSize: 11, color: '#78909c', background: '#f5f7fa', borderTop: '1px solid #cfd8dc' }}>
-                        Visualizzati primi {compactView ? 1500 : 500} di {fmtInt(filteredItems.length)} — {compactView ? 'affinare filtri' : 'passa a vista compatta per più righe'}
+                        Visualizzati primi {viewMode !== 'detail' ? 1500 : 500} di {fmtInt(filteredItems.length)} — {viewMode !== 'detail' ? 'affinare filtri' : 'passa a vista Compatta per più righe'}
                       </div>
                     )}
                     {filteredItems.length === 0 && <div className="empty"><div className="em-ttl">Nessun record</div>Modificare i filtri.</div>}
@@ -3661,6 +4325,33 @@ export default function GestionaleImportazioni() {
                   </div>
 
                   {/* ===== TABELLA SCOMPOSTA ===== */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 8px', background: '#eceff1', borderBottom: '1px solid #cfd8dc' }}>
+                    <div style={{ fontSize: 11, color: '#37474f' }}>
+                      📦 <b>{selectedItems.length}</b> articoli · <b>{totaliSelezione.totQty}</b> pezzi · Costo totale <b>€ {fmtEur(totaliSelezione.totCosto)}</b>
+                      {totaliSelezione.totFill > 0 && (
+                        <span style={{ marginLeft: 8, padding: '2px 6px', background: totaliSelezione.totFill >= 0.95 ? '#c8e6c9' : (totaliSelezione.totFill >= 0.43 ? '#fff3e0' : '#fce4ec'), border: '1px solid', borderColor: totaliSelezione.totFill >= 0.95 ? '#388e3c' : (totaliSelezione.totFill >= 0.43 ? '#f57c00' : '#c2185b'), color: totaliSelezione.totFill >= 0.95 ? '#1b5e20' : (totaliSelezione.totFill >= 0.43 ? '#bf360c' : '#880e4f'), borderRadius: 2, fontWeight: 700 }} title={`Fill totale: ${(totaliSelezione.totFill * 100).toFixed(1)}% di un container 40'HQ\n0.43 = 20' pieno · 1.00 = 40'HQ pieno`}>
+                          🚢 FILL: {(totaliSelezione.totFill * 100).toFixed(1)}%
+                          {totaliSelezione.containerInfo && <span style={{ marginLeft: 4 }}>· {totaliSelezione.containerInfo}</span>}
+                        </span>
+                      )}
+                      {hiddenColumns.length > 0 && <span style={{ marginLeft: 8, color: '#bf360c' }}>· {hiddenColumns.length} colonne nascoste</span>}
+                    </div>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      {hiddenColumns.length > 0 && (
+                        <button className="tbtn" onClick={showAllColumns} style={{ fontSize: 10, background: '#fff59d', borderColor: '#f57f17', color: '#bf360c' }}>
+                          👁 Mostra tutte le colonne
+                        </button>
+                      )}
+                      <button className="tbtn" onClick={() => setExportWizard({ section: 'selezione', format: 'pdf', options: { includeScomposizione: true, includeScenarios: selScenarios.length > 0 } })}
+                              style={{ fontSize: 10, background: 'linear-gradient(to bottom,#ef5350,#c62828)', color: '#fff' }}>
+                        <Printer size={11} /> Esporta PDF
+                      </button>
+                      <button className="tbtn" onClick={() => setExportWizard({ section: 'selezione', format: 'excel', options: { includeScomposizione: true, includeScenarios: selScenarios.length > 0 } })}
+                              style={{ fontSize: 10, background: 'linear-gradient(to bottom,#66bb6a,#388e3c)', color: '#fff' }}>
+                        <FileSpreadsheet size={11} /> Esporta Excel
+                      </button>
+                    </div>
+                  </div>
                   <div className="grid-wrap">
                     <table className="grid scomposto">
                       <thead>
@@ -3671,14 +4362,14 @@ export default function GestionaleImportazioni() {
                           <th>Fornitore</th>
                           <th className="num" style={{ width: 60 }}>Q.tà</th>
                           <th className="num">P.Orig.</th>
-                          <th className="num col-cn">FOB €</th>
-                          <th className="num col-cn">Nolo €</th>
-                          <th className="num col-cn">CIF €</th>
-                          <th className="num col-cn">Dazio €</th>
-                          <th className="num col-cn">IVA €</th>
-                          <th className="num col-cn col-extra">Extra €</th>
-                          <th className="num col-cn col-extra">Servizi €</th>
-                          <th className="num">PFU €</th>
+                          {isColumnVisible('fobEur') && <th className="num col-cn col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('fobEur')}>FOB € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('noloPerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('noloPerPezzo')}>Nolo € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('valoreStatistico') && <th className="num col-cn col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('valoreStatistico')}>CIF € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('dazio') && <th className="num col-cn col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('dazio')}>Dazio € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('iva') && <th className="num col-cn col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('iva')}>IVA € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('extraNoloPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('extraNoloPerPezzo')}>Extra € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('serviziIvaPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('serviziIvaPerPezzo')}>Servizi € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('pfu') && <th className="num col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('pfu')}>PFU € <span className="hide-x">×</span></th>}
                           <th className="num col-finale">Costo /pz</th>
                           <th className="num col-finale">Subtotale</th>
                           <th className="num col-finale">Vendita /pz</th>
@@ -3702,14 +4393,14 @@ export default function GestionaleImportazioni() {
                                 <input type="number" min="1" className="qty-inp" value={qty} onChange={e => updateSelectedQty(item.id, e.target.value)} />
                               </td>
                               <td className="num price-orig">{fmtEur(item.prezzoOriginale)}{item.currency !== 'EUR' && <span className="tag-cur">{item.currency}</span>}</td>
-                              <td className="num col-cn">{sc ? fmtEur(sc.fobEur) : '—'}</td>
-                              <td className="num col-cn">{sc ? fmtEur(sc.noloPerPezzo) : '—'}</td>
-                              <td className="num col-cn col-cif">{sc ? <b>{fmtEur(sc.valoreStatistico)}</b> : '—'}</td>
-                              <td className="num col-cn">{sc ? fmtEur(sc.dazio) : '—'}</td>
-                              <td className="num col-cn">{sc ? fmtEur(sc.iva) : '—'}</td>
-                              <td className="num col-cn col-extra">{sc ? fmtEur(sc.extraNoloPerPezzo) : '—'}</td>
-                              <td className="num col-cn col-extra">{sc ? fmtEur(sc.serviziIvaPerPezzo) : '—'}</td>
-                              <td className="num">{fmtEur(sc ? sc.pfuPezzo : item.pfu)}</td>
+                              {isColumnVisible('fobEur') && <td className="num col-cn">{sc ? fmtEur(sc.fobEur) : '—'}</td>}
+                              {isColumnVisible('noloPerPezzo') && <td className="num col-cn">{sc ? fmtEur(sc.noloPerPezzo) : '—'}</td>}
+                              {isColumnVisible('valoreStatistico') && <td className="num col-cn col-cif">{sc ? <b>{fmtEur(sc.valoreStatistico)}</b> : '—'}</td>}
+                              {isColumnVisible('dazio') && <td className="num col-cn">{sc ? fmtEur(sc.dazio) : '—'}</td>}
+                              {isColumnVisible('iva') && <td className="num col-cn">{sc ? fmtEur(sc.iva) : '—'}</td>}
+                              {isColumnVisible('extraNoloPerPezzo') && <td className="num col-cn col-extra">{sc ? fmtEur(sc.extraNoloPerPezzo) : '—'}</td>}
+                              {isColumnVisible('serviziIvaPerPezzo') && <td className="num col-cn col-extra">{sc ? fmtEur(sc.serviziIvaPerPezzo) : '—'}</td>}
+                              {isColumnVisible('pfu') && <td className="num">{fmtEur(sc ? sc.pfuPezzo : item.pfu)}</td>}
                               <td className="num col-finale price-final">€ {fmtEur(costoUnit)}</td>
                               <td className="num col-finale price-final">€ {fmtEur(costoUnit * qty)}</td>
                               <td className="num col-finale" style={{ color: '#2e7d32' }}>€ {fmtEur(venditaUnit)}</td>
@@ -3725,14 +4416,14 @@ export default function GestionaleImportazioni() {
                           <td colSpan="4" style={{ textAlign: 'right', fontWeight: 700 }}>TOTALI ORDINE →</td>
                           <td className="num"><b>{totaliSelezione.totQty}</b></td>
                           <td colSpan="1"></td>
-                          <td className="num col-cn"><b>{fmtEur(totaliSelezione.totFobEur)}</b></td>
-                          <td className="num col-cn"><b>{fmtEur(totaliSelezione.totNolo)}</b></td>
-                          <td className="num col-cn col-cif"><b>{fmtEur(totaliSelezione.totCif)}</b></td>
-                          <td className="num col-cn"><b>{fmtEur(totaliSelezione.totDazio)}</b></td>
-                          <td className="num col-cn"><b>{fmtEur(totaliSelezione.totIva)}</b></td>
-                          <td className="num col-cn col-extra"><b>{fmtEur(totaliSelezione.totExtra)}</b></td>
-                          <td className="num col-cn col-extra"><b>{fmtEur(totaliSelezione.totServizi)}</b></td>
-                          <td className="num"><b>{fmtEur(totaliSelezione.totPfu)}</b></td>
+                          {isColumnVisible('fobEur') && <td className="num col-cn"><b>{fmtEur(totaliSelezione.totFobEur)}</b></td>}
+                          {isColumnVisible('noloPerPezzo') && <td className="num col-cn"><b>{fmtEur(totaliSelezione.totNolo)}</b></td>}
+                          {isColumnVisible('valoreStatistico') && <td className="num col-cn col-cif"><b>{fmtEur(totaliSelezione.totCif)}</b></td>}
+                          {isColumnVisible('dazio') && <td className="num col-cn"><b>{fmtEur(totaliSelezione.totDazio)}</b></td>}
+                          {isColumnVisible('iva') && <td className="num col-cn"><b>{fmtEur(totaliSelezione.totIva)}</b></td>}
+                          {isColumnVisible('extraNoloPerPezzo') && <td className="num col-cn col-extra"><b>{fmtEur(totaliSelezione.totExtra)}</b></td>}
+                          {isColumnVisible('serviziIvaPerPezzo') && <td className="num col-cn col-extra"><b>{fmtEur(totaliSelezione.totServizi)}</b></td>}
+                          {isColumnVisible('pfu') && <td className="num"><b>{fmtEur(totaliSelezione.totPfu)}</b></td>}
                           <td className="num col-finale" colSpan="2" style={{ background: '#1976d2', color: '#fff' }}><b>COSTO: € {fmtEur(totaliSelezione.totCosto)}</b></td>
                           <td className="num col-finale" colSpan="2" style={{ background: '#2e7d32', color: '#fff' }}><b>VENDITA: € {fmtEur(totaliSelezione.totVendita)}</b></td>
                           <td></td>
@@ -4391,6 +5082,12 @@ export default function GestionaleImportazioni() {
                           {chinaHeaders.map((h, i) => <option key={i} value={h}>{h}</option>)}
                         </select>
                       </div>
+                      <div className="fld"><label>Capacità 40'HQ <span style={{fontSize:9,color:'#1976d2'}}>(opzionale)</span></label>
+                        <select className="ctl" value={chinaMapping.capacita40HQ || ''} onChange={e => setChinaMapping({ ...chinaMapping, capacita40HQ: e.target.value })}>
+                          <option value="">-- Auto (lookup misure) --</option>
+                          {chinaHeaders.map((h, i) => <option key={i} value={h}>{h}</option>)}
+                        </select>
+                      </div>
                     </div>
                   </div>
 
@@ -5015,7 +5712,7 @@ export default function GestionaleImportazioni() {
               const itemsWithPrice = compareItems.map(it => {
                 const sc = it.origine === 'CN' ? scomposizioneCatalogo[it.id] : null;
                 const totFull = sc ? sc.costoFinale : (parseFloat(it.prezzoFinale) || 0);
-                const totVisible = sc ? calcTotaleFiltrato(sc) : totFull;
+                const totVisible = sc ? calcTotaleFiltratoView(sc) : totFull;
                 return { ...it, _sc: sc, _totFull: totFull, _totVisible: totVisible };
               });
               // Min e max per calcolare differenze
@@ -5069,6 +5766,287 @@ export default function GestionaleImportazioni() {
                 );
               });
             })()}
+          </div>
+        </div>
+      )}
+
+      {/* ===== MODALE EXPORT WIZARD (v2.2) ===== */}
+      {exportWizard && (
+        <div className="guide-overlay" onClick={() => setExportWizard(null)}>
+          <div className="guide-modal" style={{ maxWidth: 600 }} onClick={e => e.stopPropagation()}>
+            <div className="guide-header" style={{ background: 'linear-gradient(to bottom, #ff6f00, #e65100)' }}>
+              <h2>📤 Esporta — scegli cosa</h2>
+              <button className="sim-close" onClick={() => setExportWizard(null)}>✕</button>
+            </div>
+            <div className="guide-body">
+              <h3 style={{ color: '#bf360c', marginTop: 0 }}>1. Cosa vuoi esportare?</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8, marginBottom: 16 }}>
+                {[
+                  { key: 'selezione', label: '🛒 Selezione corrente', desc: `${selectedItems.length} articoli` },
+                  { key: 'catalogo', label: '📚 Catalogo', desc: `${allItems.length} articoli totali` },
+                  { key: 'sizelists', label: '📋 Listini Misure', desc: `${sizeLists.length} listini salvati` },
+                  { key: 'bolle', label: '📄 Bolla doganale', desc: 'apri dalla sezione Bolle' }
+                ].map(opt => (
+                  <button key={opt.key}
+                          onClick={() => setExportWizard({ ...exportWizard, section: opt.key })}
+                          style={{
+                            padding: 10, textAlign: 'left',
+                            background: exportWizard.section === opt.key ? 'linear-gradient(to bottom,#ffcc80,#ffb74d)' : '#fff',
+                            border: exportWizard.section === opt.key ? '2px solid #e65100' : '1px solid #cfd8dc',
+                            cursor: 'pointer', color: '#263238'
+                          }}>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{opt.label}</div>
+                    <div style={{ fontSize: 10, color: '#78909c' }}>{opt.desc}</div>
+                  </button>
+                ))}
+              </div>
+
+              <h3 style={{ color: '#bf360c' }}>2. Formato</h3>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+                {[
+                  { key: 'pdf', label: '🖨 PDF', desc: 'Per stampare o inviare' },
+                  { key: 'excel', label: '📊 Excel', desc: 'Per ulteriori analisi' }
+                ].map(opt => (
+                  <button key={opt.key}
+                          onClick={() => setExportWizard({ ...exportWizard, format: opt.key })}
+                          style={{
+                            flex: 1, padding: 10, textAlign: 'left',
+                            background: exportWizard.format === opt.key ? 'linear-gradient(to bottom,#ffcc80,#ffb74d)' : '#fff',
+                            border: exportWizard.format === opt.key ? '2px solid #e65100' : '1px solid #cfd8dc',
+                            cursor: 'pointer'
+                          }}>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{opt.label}</div>
+                    <div style={{ fontSize: 10, color: '#78909c' }}>{opt.desc}</div>
+                  </button>
+                ))}
+              </div>
+
+              {(exportWizard.section === 'selezione' || exportWizard.section === 'catalogo') && (
+                <>
+                  <h3 style={{ color: '#bf360c' }}>3. Opzioni</h3>
+                  <div style={{ background: '#fff8e1', padding: 10, borderRadius: 3 }}>
+                    <label style={{ display: 'block', marginBottom: 6, cursor: 'pointer' }}>
+                      <input type="checkbox" checked={exportWizard.options?.includeScomposizione || false}
+                             onChange={e => setExportWizard({ ...exportWizard, options: { ...exportWizard.options, includeScomposizione: e.target.checked } })} />
+                      <span style={{ marginLeft: 6 }}>Includi scomposizione costi (FOB, Nolo, CIF, Dazio, IVA...)</span>
+                    </label>
+                    {exportWizard.section === 'selezione' && (
+                      <label style={{ display: 'block', marginBottom: 6, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={exportWizard.options?.includeScenarios || false}
+                               onChange={e => setExportWizard({ ...exportWizard, options: { ...exportWizard.options, includeScenarios: e.target.checked } })} />
+                        <span style={{ marginLeft: 6 }}>Includi scenari salvati ({selScenarios.length})</span>
+                      </label>
+                    )}
+                    {exportWizard.section === 'catalogo' && (
+                      <label style={{ display: 'block', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={exportWizard.options?.useFiltered || false}
+                               onChange={e => setExportWizard({ ...exportWizard, options: { ...exportWizard.options, useFiltered: e.target.checked } })} />
+                        <span style={{ marginLeft: 6 }}>Solo articoli filtrati ({filteredItems.length} di {allItems.length})</span>
+                      </label>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {exportWizard.section === 'sizelists' && sizeLists.length > 0 && (
+                <>
+                  <h3 style={{ color: '#bf360c' }}>3. Quale listino?</h3>
+                  <select className="ctl" value={exportWizard.options?.sizeListId || activeSizeListId || sizeLists[0]?.id || ''}
+                          onChange={e => setExportWizard({ ...exportWizard, options: { ...exportWizard.options, sizeListId: e.target.value } })}>
+                    {sizeLists.map(l => <option key={l.id} value={l.id}>{l.name} ({l.items.length} misure)</option>)}
+                  </select>
+                </>
+              )}
+            </div>
+            <div className="guide-footer" style={{ justifyContent: 'space-between' }}>
+              <button className="tbtn" onClick={() => setExportWizard(null)}>Annulla</button>
+              <button className="tbtn success" onClick={() => runExportWizard(exportWizard)}>
+                <Download size={12} /> Esporta ora
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ===== MODALE CONFRONTO SCENARI ARTICOLO SINGOLO (v2.2) ===== */}
+      {articleScenarioModal && (
+        <div className="guide-overlay" onClick={() => setArticleScenarioModal(null)}>
+          <div className="guide-modal" style={{ maxWidth: 1400, maxHeight: '95vh' }} onClick={e => e.stopPropagation()}>
+            <div className="guide-header" style={{ background: 'linear-gradient(to bottom, #7b1fa2, #4a148c)' }}>
+              <h2>🔬 Confronto Scenari — {articleScenarioModal.item.marca} {articleScenarioModal.item.modello} {articleScenarioModal.item.misura}</h2>
+              <button className="sim-close" onClick={() => setArticleScenarioModal(null)}>✕</button>
+            </div>
+            <div className="guide-body" style={{ padding: 12 }}>
+              <div style={{ background: '#f3e5f5', padding: 8, marginBottom: 10, fontSize: 11, color: '#4a148c' }}>
+                <b>📋 Come funziona:</b> crea fino a 6 scenari diversi (es. "Standard", "Senza dazio", "Cina invece di HoChiMin"), modifica i parametri di ognuno, e confronta i totali a colpo d'occhio.
+                <span style={{ marginLeft: 8 }}><b>Articolo:</b> {articleScenarioModal.item.currency || 'EUR'} {fmtEur(articleScenarioModal.item.prezzoOriginale)} · Origine: {articleScenarioModal.item.origine}</span>
+              </div>
+
+              {/* Header con pulsanti per scenari */}
+              <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                {articleScenarioModal.scenarios.map((s, idx) => (
+                  <div key={s.id} style={{ background: s.color, color: '#fff', padding: '4px 10px', borderRadius: 3, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+                    <input value={s.name} onChange={e => renameArticleScenario(s.id, e.target.value)}
+                           style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', padding: '2px 4px', fontSize: 11, width: 130, fontWeight: 700 }} />
+                    {articleScenarioModal.scenarios.length > 1 && (
+                      <button onClick={() => removeArticleScenario(s.id)} style={{ background: 'rgba(0,0,0,0.2)', border: 'none', color: '#fff', cursor: 'pointer', padding: '0 4px' }}>✕</button>
+                    )}
+                  </div>
+                ))}
+                {articleScenarioModal.scenarios.length < 6 && (
+                  <button className="tbtn primary" onClick={addArticleScenario} style={{ fontSize: 11 }}>
+                    <Plus size={11} /> Aggiungi Scenario
+                  </button>
+                )}
+              </div>
+
+              {/* TABELLA CONFRONTO PARAMETRI */}
+              <div style={{ overflowX: 'auto', marginBottom: 16 }}>
+                <table className="grid" style={{ minWidth: 800 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ background: '#37474f', color: '#fff', minWidth: 180 }}>Parametro</th>
+                      {articleScenarioModal.scenarios.map(s => (
+                        <th key={s.id} style={{ background: s.color, color: '#fff', minWidth: 120, textAlign: 'center' }}>{s.name}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[
+                      { key: 'noloPreset', label: 'Rotta/Container', isPreset: true },
+                      { key: 'qtyTotale', label: 'Q.tà rif.', step: 1 },
+                      { key: 'tassoEurUsd', label: 'Cambio EUR/USD', step: 0.0001 },
+                      { key: 'noloMare', label: 'Nolo mare $', step: 1 },
+                      { key: 'fuelSurcharge', label: 'Fuel mare €', step: 1 },
+                      { key: 'ics2Usd', label: 'ICS2 $', step: 1 },
+                      { key: 'ecaSurcharge', label: 'ECA $', step: 1 },
+                      { key: 'costiSbarco', label: 'THC sbarco €', step: 1 },
+                      { key: 'addizionaliCompMar', label: 'Addiz. CM €', step: 1 },
+                      { key: 'doganaImport', label: 'Dogana €', step: 1 },
+                      { key: 'deliveryOrder', label: 'Delivery €', step: 1 },
+                      { key: 'trasportoInterno', label: 'Trasporto €', step: 1 },
+                      { key: 'fuelTrasportoPct', label: 'Fuel trasp. %', step: 0.1 },
+                      { key: 'commissioni', label: 'Commissioni €', step: 0.5 },
+                      { key: 'dazioPct', label: 'Dazio %', step: 0.1, special: 'dazio' },
+                      { key: 'ivaPct', label: 'IVA %', step: 0.5, special: 'iva' },
+                      { key: 'aggiustamento', label: 'Aggiust. v.45 €', step: 0.5 }
+                    ].map(field => (
+                      <tr key={field.key}>
+                        <td style={{ fontWeight: 600 }}>
+                          {field.label}
+                          {field.special === 'dazio' && <button onClick={() => articleScenarioModal.scenarios.forEach(s => updateArticleScenarioParam(s.id, 'dazioPct', 0))} style={{ marginLeft: 6, fontSize: 8, padding: '1px 4px', cursor: 'pointer' }} title="Azzera dazio in tutti gli scenari">⛔</button>}
+                          {field.special === 'iva' && <button onClick={() => articleScenarioModal.scenarios.forEach(s => updateArticleScenarioParam(s.id, 'ivaPct', 0))} style={{ marginLeft: 6, fontSize: 8, padding: '1px 4px', cursor: 'pointer' }} title="Azzera IVA in tutti gli scenari">⛔</button>}
+                        </td>
+                        {articleScenarioModal.scenarios.map(s => (
+                          <td key={s.id} className="num" style={{ borderLeft: `3px solid ${s.color}` }}>
+                            {field.isPreset ? (
+                              <select className="ctl" value={s.params.noloPreset || 'hcm_40'}
+                                      onChange={e => applyPresetToArticleScenario(s.id, e.target.value)}
+                                      style={{ width: '100%', fontSize: 10 }}>
+                                {Object.entries(NOLO_PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                              </select>
+                            ) : (
+                              <input className="ctl" type="number" step={field.step} value={s.params[field.key] || 0}
+                                     onChange={e => updateArticleScenarioParam(s.id, field.key, parseFloat(e.target.value) || 0)}
+                                     style={{ width: '100%', height: 22, fontSize: 11, textAlign: 'right' }} />
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* TABELLA CONFRONTO COSTI */}
+              <h3 style={{ color: '#4a148c', marginBottom: 6 }}>📊 Risultato per pezzo</h3>
+              <div style={{ overflowX: 'auto' }}>
+                <table className="grid" style={{ minWidth: 800 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ background: '#37474f', color: '#fff' }}>Voce</th>
+                      {articleScenarioModal.scenarios.map(s => (
+                        <th key={s.id} style={{ background: s.color, color: '#fff', textAlign: 'right' }}>{s.name}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[
+                      { key: 'fobEur', label: 'FOB €' },
+                      { key: 'noloPerPezzo', label: 'Nolo /pz' },
+                      { key: 'aggPerPezzo', label: 'Aggiust /pz' },
+                      { key: 'valoreStatistico', label: 'CIF (v.46)', bold: true },
+                      { key: 'dazio', label: 'Dazio' },
+                      { key: 'tassePerPezzo', label: '9AJ' },
+                      { key: 'iva', label: 'IVA' },
+                      { key: 'extraNoloPerPezzo', label: 'Extra art.74' },
+                      { key: 'serviziIvaPerPezzo', label: 'Servizi IVA' },
+                      { key: 'commissioniPerPezzo', label: 'Commissioni' },
+                      { key: 'pfuPezzo', label: 'PFU' },
+                      { key: 'costoFinale', label: 'COSTO FINALE', highlight: true }
+                    ].map(row => {
+                      const values = articleScenarioCalcs.map(c => parseFloat(c.scomposizione?.[row.key]) || 0);
+                      const minV = Math.min(...values);
+                      const maxV = Math.max(...values);
+                      return (
+                        <tr key={row.key} style={row.highlight ? { background: '#fff9c4', fontSize: 14 } : {}}>
+                          <td style={{ fontWeight: row.bold || row.highlight ? 700 : 400 }}>{row.label}</td>
+                          {articleScenarioCalcs.map((c, idx) => {
+                            const val = parseFloat(c.scomposizione?.[row.key]) || 0;
+                            const isMin = values.length > 1 && Math.abs(val - minV) < 0.001 && minV !== maxV;
+                            const isMax = values.length > 1 && Math.abs(val - maxV) < 0.001 && minV !== maxV;
+                            return (
+                              <td key={c.scenario.id} className="num"
+                                  style={{
+                                    borderLeft: `3px solid ${c.scenario.color}`,
+                                    fontWeight: row.bold || row.highlight ? 700 : 400,
+                                    color: row.highlight ? '#1b5e20' : (isMin ? '#1b5e20' : (isMax ? '#c62828' : 'inherit')),
+                                    background: row.highlight ? '#fff9c4' : 'transparent'
+                                  }}>
+                                € {fmtEur(val)}
+                                {row.highlight && isMin && articleScenarioCalcs.length > 1 && <span style={{ fontSize: 9, marginLeft: 4 }}>🏆</span>}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                    {/* Riga delta vs scenario 1 */}
+                    {articleScenarioCalcs.length > 1 && (
+                      <tr style={{ background: '#e3f2fd' }}>
+                        <td style={{ fontWeight: 700, color: '#0d47a1' }}>Δ vs Scenario 1</td>
+                        {articleScenarioCalcs.map((c, idx) => {
+                          if (idx === 0) return <td key={c.scenario.id} className="num" style={{ borderLeft: `3px solid ${c.scenario.color}` }}>—</td>;
+                          const base = articleScenarioCalcs[0].scomposizione?.costoFinale || 0;
+                          const curr = c.scomposizione?.costoFinale || 0;
+                          const diff = curr - base;
+                          const pct = base > 0 ? (diff / base * 100) : 0;
+                          return (
+                            <td key={c.scenario.id} className="num" style={{ borderLeft: `3px solid ${c.scenario.color}`, fontWeight: 700, color: diff < 0 ? '#1b5e20' : '#c62828' }}>
+                              {diff >= 0 ? '+' : ''}{fmtEur(diff)} € ({diff >= 0 ? '+' : ''}{pct.toFixed(1)}%)
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div className="guide-footer" style={{ justifyContent: 'space-between' }}>
+              <div style={{ fontSize: 11, color: '#546e7a' }}>
+                💡 Modifica i parametri direttamente: tutti i calcoli si aggiornano in tempo reale
+              </div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button className="tbtn" onClick={() => exportArticleScenariosPdf(articleScenarioModal)} style={{ background: 'linear-gradient(to bottom,#ef5350,#c62828)', color: '#fff' }}>
+                  <Printer size={12} /> Esporta PDF
+                </button>
+                <button className="tbtn" onClick={() => exportArticleScenariosExcel(articleScenarioModal)} style={{ background: 'linear-gradient(to bottom,#66bb6a,#388e3c)', color: '#fff' }}>
+                  <FileSpreadsheet size={12} /> Esporta Excel
+                </button>
+                <button className="tbtn" onClick={() => setArticleScenarioModal(null)}>Chiudi</button>
+              </div>
+            </div>
           </div>
         </div>
       )}
