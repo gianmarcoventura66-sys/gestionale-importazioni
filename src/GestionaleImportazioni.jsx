@@ -47,6 +47,66 @@ const _fmtE = (n) => {
   return num.toLocaleString('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
 };
 
+// === TOOLTIP FORMULE CALCOLO (v2.8) ===
+// Genera testo formattato con la formula del calcolo + numeri reali sostituiti
+// p = parametri attivi (chinaParams), sc = scomposizione calcolata, item = articolo
+// Ritorna stringa multi-riga (con \n) usata come `title` HTML
+
+function fmtN(n, dec = 2) {
+  const num = parseFloat(n) || 0;
+  return num.toLocaleString('it-IT', { minimumFractionDigits: dec, maximumFractionDigits: dec });
+}
+
+// Genera la spiegazione di una colonna con valori reali
+function spiegaCalcolo(colKey, sc, p) {
+  if (!sc) return '';
+  const cambio = parseFloat(p?.tassoEurUsd) || 1.1787;
+  const qtyTot = sc.qtyTot || p?.qtyTotale || 1;
+  const noloTotUsd = (parseFloat(p?.noloMare) || 0) + (parseFloat(p?.ecaSurcharge) || 0) + (parseFloat(p?.ics2Usd) || 0) + (parseFloat(p?.localChargeUsd) || 0);
+  const extraNoloTot = (parseFloat(p?.costiSbarco) || 0) + (parseFloat(p?.addizionaliCompMar) || 0) + (parseFloat(p?.doganaImport) || 0) + (parseFloat(p?.fuelSurcharge) || 0) + (parseFloat(p?.ecaEur) || 0) + (parseFloat(p?.ics2Eur) || 0) + (parseFloat(p?.localChargeEur) || 0);
+  const trasporto = parseFloat(p?.trasportoInterno) || 0;
+  const fuelTrasp = trasporto * (parseFloat(p?.fuelTrasportoPct) || 0) / 100;
+  const serviziTot = (parseFloat(p?.deliveryOrder) || 0) + trasporto + fuelTrasp + (parseFloat(p?.ivaSpedizioniere) || 0);
+
+  switch (colKey) {
+    case 'fobUsd': return `💵 FOB USD\n= prezzo originale dal listino\n= $ ${fmtN(sc.fobUsd, 4)}`;
+    case 'fobEur': return `💵 FOB EUR\n= FOB USD ÷ Cambio EUR/USD\n= ${fmtN(sc.fobUsd, 4)} ÷ ${fmtN(cambio, 4)}\n= € ${fmtN(sc.fobEur, 4)}`;
+    case 'noloPerPezzo': return `🚢 Nolo per pezzo (USD→EUR)\n= (Nolo Mare + ECA + ICS2 + Local) USD ÷ Cambio ÷ Q.tà tot\n= (${fmtN(p?.noloMare || 0, 0)} + ${fmtN(p?.ecaSurcharge || 0, 0)} + ${fmtN(p?.ics2Usd || 0, 0)} + ${fmtN(p?.localChargeUsd || 0, 0)}) ÷ ${fmtN(cambio, 4)} ÷ ${qtyTot}\n= ${fmtN(noloTotUsd, 0)} USD ÷ ${fmtN(cambio, 4)} ÷ ${qtyTot}\n= € ${fmtN(noloTotUsd / cambio, 2)} tot ÷ ${qtyTot} pz\n= € ${fmtN(sc.noloPerPezzo, 4)} /pz`;
+    case 'aggPerPezzo': return `⚖ Aggiustamento per pezzo (voce 45 DAU)\n= Aggiustamento totale ÷ Q.tà tot\n= ${fmtN(sc.aggTot, 2)} ÷ ${qtyTot}\n= € ${fmtN(sc.aggPerPezzo, 4)} /pz`;
+    case 'valoreStatistico': return `📦 Valore Statistico CIF (voce 46 DAU)\n= base imponibile per Dazio\n= FOB EUR + Nolo /pz + Aggiust /pz\n= ${fmtN(sc.fobEur, 4)} + ${fmtN(sc.noloPerPezzo, 4)} + ${fmtN(sc.aggPerPezzo, 4)}\n= € ${fmtN(sc.valoreStatistico, 4)} /pz`;
+    case 'dazio': return `🏛 Dazio A00 (TARIC 4011.10.00)\n= Valore Statistico × ${fmtN(p?.dazioPct || 0, 1)}%\n= ${fmtN(sc.valoreStatistico, 4)} × ${fmtN(p?.dazioPct || 0, 1)}%\n= € ${fmtN(sc.dazio, 4)} /pz`;
+    case 'tassePerPezzo': return `⚓ 9AJ Diritto Marittimo (fisso ripartito)\n= ${fmtN(p?.unita9AJ || 4, 0)} unità × € 1,0908 ÷ Q.tà tot\n= € ${fmtN(sc.dirittoTotale9AJ, 4)} ÷ ${qtyTot}\n= € ${fmtN(sc.tassePerPezzo, 4)} /pz`;
+    case 'iva': return `💶 IVA B00 (${fmtN(p?.ivaPct || 22, 0)}%)\n= base imponibile = CIF + Dazio + 9AJ\n= (${fmtN(sc.valoreStatistico, 4)} + ${fmtN(sc.dazio, 4)} + ${fmtN(sc.tassePerPezzo, 4)}) × ${fmtN(p?.ivaPct || 22, 0)}%\n= ${fmtN(sc.baseIva, 4)} × ${fmtN(p?.ivaPct || 22, 0)}%\n= € ${fmtN(sc.iva, 4)} /pz`;
+    case 'extraNoloPerPezzo': return `📋 Extra nolo art.74 (IVA già assolta)\n= (THC + Addiz.CM + Dogana + Fuel + ECA EUR + ICS2 EUR + Local EUR) ÷ Q.tà tot\n= (${fmtN(p?.costiSbarco || 0, 0)} + ${fmtN(p?.addizionaliCompMar || 0, 0)} + ${fmtN(p?.doganaImport || 0, 0)} + ${fmtN(p?.fuelSurcharge || 0, 0)} + ${fmtN(p?.ecaEur || 0, 0)} + ${fmtN(p?.ics2Eur || 0, 0)} + ${fmtN(p?.localChargeEur || 0, 0)}) ÷ ${qtyTot}\n= € ${fmtN(extraNoloTot, 2)} tot ÷ ${qtyTot} pz\n= € ${fmtN(sc.extraNoloPerPezzo, 4)} /pz`;
+    case 'serviziIvaPerPezzo': return `🚛 Servizi con IVA 22%\n= (Delivery + Trasporto + Fuel% + IVA Sped) ÷ Q.tà tot\n= (${fmtN(p?.deliveryOrder || 0, 0)} + ${fmtN(trasporto, 0)} + ${fmtN(fuelTrasp, 2)} + ${fmtN(p?.ivaSpedizioniere || 0, 0)}) ÷ ${qtyTot}\nFuel = ${fmtN(trasporto, 0)} × ${fmtN(p?.fuelTrasportoPct || 0, 1)}% = ${fmtN(fuelTrasp, 2)}\n= € ${fmtN(serviziTot, 2)} tot ÷ ${qtyTot} pz\n= € ${fmtN(sc.serviziIvaPerPezzo, 4)} /pz`;
+    case 'commissioniPerPezzo': return `💼 Commissioni per pezzo\n= Commissioni totali ÷ Q.tà tot\n= ${fmtN(p?.commissioni || 0, 2)} ÷ ${qtyTot}\n= € ${fmtN(sc.commissioniPerPezzo, 4)} /pz`;
+    case 'pfuPezzo': case 'pfu': return `♻ PFU (Pneumatici Fuori Uso)\nTassa ambientale italiana per fascia diametro:\n• fino R14: € 1,95\n• R14-R17: € 2,90\n• R17-R21: € 3,70\n• oltre R21: € 6,35\nFascia attuale: ${sc.pfuFascia || '7_15'}\n= € ${fmtN(sc.pfuPezzo, 2)} /pz`;
+    case 'costoFinale': return `💰 COSTO FINALE per pezzo\n= CIF + Dazio + 9AJ + IVA + Extra art.74 + Servizi IVA + Commissioni + PFU\n= ${fmtN(sc.valoreStatistico, 2)} + ${fmtN(sc.dazio, 2)} + ${fmtN(sc.tassePerPezzo, 2)} + ${fmtN(sc.iva, 2)} + ${fmtN(sc.extraNoloPerPezzo, 2)} + ${fmtN(sc.serviziIvaPerPezzo, 2)} + ${fmtN(sc.commissioniPerPezzo, 2)} + ${fmtN(sc.pfuPezzo, 2)}\n= € ${fmtN(sc.costoFinale, 2)} /pz`;
+    case 'prezzoVendita': return `🏷 Prezzo Vendita\n= Costo Finale × Markup ${fmtN(p?.markup || 1, 2)}\n= ${fmtN(sc.costoFinale, 2)} × ${fmtN(p?.markup || 1, 2)}\n= € ${fmtN(sc.prezzoVendita, 2)} /pz`;
+    default: return '';
+  }
+}
+
+// Spiegazioni per colonne SENZA scomposizione (intestazioni generiche)
+function spiegaIntestazione(colKey) {
+  switch (colKey) {
+    case 'fobUsd': return '💵 FOB USD = prezzo originale dal listino fornitore';
+    case 'fobEur': return '💵 FOB EUR = FOB USD ÷ Cambio EUR/USD\nClicca per nascondere colonna';
+    case 'noloPerPezzo': return '🚢 Nolo per pezzo = (Nolo Mare USD + ECA + ICS2) ÷ Cambio ÷ Q.tà tot\nClicca per nascondere colonna';
+    case 'aggPerPezzo': return '⚖ Aggiustamento per pezzo (voce 45 DAU) = Aggiust totale ÷ Q.tà tot\nClicca per nascondere colonna';
+    case 'valoreStatistico': return '📦 Valore Statistico CIF (voce 46 DAU) = FOB + Nolo + Aggiust\nÈ la BASE IMPONIBILE per il dazio.\nClicca per nascondere colonna';
+    case 'dazio': return '🏛 Dazio A00 = CIF × 4,5% (TARIC 4011.10.00)\nClicca per nascondere colonna';
+    case 'tassePerPezzo': return '⚓ 9AJ Diritto Marittimo = N° unità × € 1,0908 ÷ Q.tà tot\nClicca per nascondere colonna';
+    case 'iva': return '💶 IVA B00 = (CIF + Dazio + 9AJ) × 22%\nClicca per nascondere colonna';
+    case 'extraNoloPerPezzo': return '📋 Extra Nolo art.74 = (THC + Dogana + Fuel + Addiz CM) ÷ Q.tà tot\nIVA già assolta sul nolo, non si paga di nuovo.\nClicca per nascondere colonna';
+    case 'serviziIvaPerPezzo': return '🚛 Servizi con IVA 22% = (Delivery + Trasp + Fuel% + IVA Sped) ÷ Q.tà tot\nClicca per nascondere colonna';
+    case 'commissioniPerPezzo': return '💼 Commissioni = Comm totali ÷ Q.tà tot\nClicca per nascondere colonna';
+    case 'pfu': return '♻ PFU = tassa ambientale per fascia diametro\nR≤14: 1,95€ · R15-17: 2,90€ · R18-21: 3,70€ · R22+: 6,35€\nClicca per nascondere colonna';
+    case 'costoFinale': return '💰 Costo Finale = CIF + Dazio + 9AJ + IVA + Extra + Servizi + Comm + PFU\nÈ il costo TUTTO INCLUSO per pezzo.';
+    default: return '';
+  }
+}
+
 // === LOOKUP CAPACITÀ CONTAINER 40'HQ PER MISURA (basata su Arivo, valida per tutti i fornitori) ===
 // Source: Arivo Cambodia PCR Price List 2026.04.14
 // Per altre misure si stima dalla formula: capacità ≈ f(diametro, larghezza)
@@ -108,7 +168,54 @@ function stimaCapacita40HQ(misuraNorm) {
   return best || 1000;
 }
 
-// === HELPER MISURE PNEUMATICI ===
+// === DETECT STAGIONE PNEUMATICO (v2.7) ===
+// Deduce automaticamente la stagione dal nome del modello/pattern
+// Ritorna: 'estivo' | 'invernale' | 'allseason'
+function detectStagione(modelloOrPattern, misura = '') {
+  const txt = String(modelloOrPattern || '').toUpperCase();
+  const mis = String(misura || '').toUpperCase();
+  const tutto = txt + ' ' + mis;
+  // ALL-SEASON (priorità su invernale/estivo per evitare falsi positivi)
+  if (/\b(4S|4-S|4_S|ALL.?SEASON|4\s*SEASON|QUATTRO.?STAG|VECTOR|CROSSCLIMATE|CINTURATO\s*ALL|QUATRAC|WEATHERREADY)\b/.test(tutto)) return 'allseason';
+  // INVERNALI: pattern frequenti ICE, SNOW, WIN, WINTER, ALPIN, ARCTIC, FROST, NORD, BLIZZAK
+  if (/\b(ICE|SNOW|WIN(?!D|G)|WINTER|ALPIN|ARCTIC|FROST|NORDIC|BLIZZAK|CARVING|EISKRALLE|XPN|WINGUARD|WINMAX|WEATHERMAS|WINTERSPORT|WINTERHAWK|WINTERMASTER|WINTERSPIKE|XICE|X-ICE|ULTRAGRIP|CRYOSPORT|ICEGUARD|ICESPORT|ISPIKE)\b/.test(tutto)) return 'invernale';
+  if (/3PMSF/.test(tutto)) return 'invernale';
+  // ESTIVI (pattern HP/UHP/sport/performance — espliciti)
+  if (/\b(HP|UHP|SPORT|PERFORM|PROXES|ECO|TURISMO|TURIST|SUMMER|MAXX|EAGLE|POTENZA|PRIMACY|PILOT|ECSTA|ULTRA HP|CARBON HP)\b/.test(tutto)) return 'estivo';
+  // Pneumatico marcato M+S senza altri indicatori: probabile all-season
+  if (/\bM\+?S\b/.test(tutto) && !/SUMMER|HP|UHP/.test(tutto)) return 'allseason';
+  // Default per CN: estivo
+  return 'estivo';
+}
+
+// Etichette UI per stagioni — formato {icon, label, color} per usi avanzati
+const STAGIONE_LABELS = {
+  estivo:    { icon: '☀️', label: 'Estivo',     color: '#f57c00' },
+  invernale: { icon: '❄️', label: 'Invernale',  color: '#0277bd' },
+  allseason: { icon: '🍃', label: 'All-Season', color: '#558b2f' }
+};
+
+// === FASCIA PREZZO (v2.7) ===
+// Classifica un articolo in base al prezzo originale rispetto al range del fornitore
+// 'eco' = primo terzo, 'medio' = secondo terzo, 'alto' = ultimo terzo
+function calcFasciaPrezzo(prezzo, prezziFornitore) {
+  if (!prezziFornitore || prezziFornitore.length === 0) return 'medio';
+  const sorted = [...prezziFornitore].sort((a, b) => a - b);
+  const tercileBasso = sorted[Math.floor(sorted.length / 3)];
+  const tercileAlto = sorted[Math.floor(sorted.length * 2 / 3)];
+  if (prezzo <= tercileBasso) return 'eco';
+  if (prezzo >= tercileAlto) return 'alto';
+  return 'medio';
+}
+
+const FASCIA_PREZZO_LABELS = {
+  eco: '💰 Economico',
+  medio: '💵 Medio',
+  alto: '💎 Alto',
+  any: 'Qualsiasi'
+};
+
+
 // Estrae i 3 numeri chiave (larghezza, spalla, diametro) da una stringa misura
 // Funziona con: 205/55R16, 205/55 R16, 205/55r16, 205-55-16, 2055516, "205 55 16", ecc.
 function parseMisura(raw) {
@@ -679,7 +786,15 @@ export default function GestionaleImportazioni() {
   useEffect(() => {
     (async () => {
       try { const s = await window.storage.get('suppliers'); if (s) setSuppliers(JSON.parse(s.value)); } catch (e) {}
-      try { const i = await window.storage.get('allItems'); if (i) setAllItems(JSON.parse(i.value)); } catch (e) {}
+      try {
+        const i = await window.storage.get('allItems');
+        if (i) {
+          let parsed = JSON.parse(i.value);
+          // v2.7 migration: aggiungo stagione agli articoli che non ce l'hanno
+          parsed = parsed.map(it => it.stagione ? it : { ...it, stagione: detectStagione((it.modello || '') + ' ' + (it.marca || ''), it.misura || '') });
+          setAllItems(parsed);
+        }
+      } catch (e) {}
       try { const sel = await window.storage.get('selectedItems'); if (sel) setSelectedItems(JSON.parse(sel.value)); } catch (e) {}
       try { const ex = await window.storage.get('exchangeRate'); if (ex) setExchangeRate(parseFloat(ex.value)); } catch (e) {}
       try { const b = await window.storage.get('bolle'); if (b) setBolle(JSON.parse(b.value)); } catch (e) {}
@@ -785,7 +900,8 @@ export default function GestionaleImportazioni() {
         prezzoEur: Math.round(prezzoEur * 100) / 100,
         pfu, trasportoPerUnit: Math.round(trasportoPerUnit * 100) / 100,
         prezzoFinale: Math.round(prezzoFinale * 100) / 100,
-        qtyDisponibile: qty || 0
+        qtyDisponibile: qty || 0,
+        stagione: detectStagione((modIdx >= 0 ? String(row[modIdx] || '') : '') + ' ' + String(row[mIdx] || ''), misuraDisplay)  // v2.7
       });
     }
 
@@ -918,6 +1034,7 @@ export default function GestionaleImportazioni() {
       const misuraNorm = normalizeMisuraForSearch(item.misura);
       // Capacità container 40'HQ: dal file se presente, altrimenti stima
       const cap40hq = item.capacita40HQ ? parseInt(item.capacita40HQ) : stimaCapacita40HQ(misuraNorm);
+      const stagione = detectStagione(item.modello + ' ' + (item.marca || ''), misuraDisplay);
       return {
         id: supplierId + '_' + i, supplierId, supplierName: p.fornitore,
         origine: 'CN',
@@ -934,7 +1051,8 @@ export default function GestionaleImportazioni() {
         prezzoFinale: Math.round(prezzoStimato * 100) / 100, // STIMA indicativa
         pfuFascia: item.pfuFascia,
         qtyDisponibile: item.qty,
-        capacita40HQ: cap40hq
+        capacita40HQ: cap40hq,
+        stagione  // v2.7
       };
     });
     setSuppliers([...suppliers, {
@@ -1116,7 +1234,8 @@ export default function GestionaleImportazioni() {
       iva: Math.round(r.ivaPerPezzo * 100) / 100,
       prezzoFinale: Math.round(r.costoFinale * 100) / 100,
       prezzoVendita: Math.round(r.prezzoVendita * 100) / 100,
-      qtyImportata: r.qty
+      qtyImportata: r.qty,
+      stagione: detectStagione((r.modello || '') + ' ' + (r.marca || ''), r.misura)  // v2.7
     }));
 
     setSuppliers([...suppliers, {
@@ -1499,12 +1618,34 @@ export default function GestionaleImportazioni() {
     const sp = supplierParams[list.supplierId];
     const effParams = (!sp || sp.useGlobal) ? chinaParams : { ...chinaParams, ...sp.params };
 
-    // Articoli del catalogo per questo fornitore (indicizzati per misura normalizzata)
-    const catalogIndex = {};
+    // v2.7 — filtri opzionali del listino
+    const filtroStagione = list.filtroStagione || 'any';   // 'any' | 'estivo' | 'invernale' | 'allseason'
+    const filtroFascia = list.filtroFasciaPrezzo || 'any';  // 'any' | 'eco' | 'medio' | 'alto'
+
+    // Calcolo i prezzi del fornitore per fascia (se serve filtroFascia)
+    const prezziFornitore = allItems.filter(i => i.supplierId === list.supplierId).map(i => i.prezzoOriginale);
+
+    // Articoli del catalogo per questo fornitore (raggruppati per misura → array di alternative)
+    const catalogByMisura = {};
     for (const it of allItems) {
       if (it.supplierId !== list.supplierId) continue;
       const norm = it.misuraNorm || normalizeMisuraForSearch(it.misura);
-      if (!catalogIndex[norm]) catalogIndex[norm] = it;
+      // Applico filtri stagione e fascia
+      if (filtroStagione !== 'any' && it.stagione !== filtroStagione) continue;
+      if (filtroFascia !== 'any') {
+        const fascia = calcFasciaPrezzo(it.prezzoOriginale, prezziFornitore);
+        if (fascia !== filtroFascia) continue;
+      }
+      if (!catalogByMisura[norm]) catalogByMisura[norm] = [];
+      catalogByMisura[norm].push(it);
+    }
+
+    // Per ogni misura, scelgo l'articolo più economico tra quelli filtrati
+    const catalogIndex = {};
+    for (const norm of Object.keys(catalogByMisura)) {
+      const candidates = catalogByMisura[norm];
+      candidates.sort((a, b) => (parseFloat(a.prezzoOriginale) || 0) - (parseFloat(b.prezzoOriginale) || 0));
+      catalogIndex[norm] = candidates[0];
     }
 
     // Determino le qty effettive per ogni voce del listino
@@ -1563,6 +1704,8 @@ export default function GestionaleImportazioni() {
       breakdown.push({
         misura: it.misura, qty: it.qtyEff,
         prezzoUsd: catalogItem.prezzoOriginale,
+        modello: catalogItem.modello,
+        stagione: catalogItem.stagione,
         costoPezzo, subtotale,
         scomposizione: sc,
         status: 'ok'
@@ -1577,7 +1720,9 @@ export default function GestionaleImportazioni() {
       totFob, totNolo, totCif, totDazio, totIva,
       totExtra, totServizi, totComm, totPfu,
       costoTotale, costoMedioPezzo: qtyTotEff > 0 ? costoTotale / qtyTotEff : 0,
-      breakdown
+      breakdown,
+      // v2.7
+      filtroStagione, filtroFascia
     };
   };
 
@@ -3830,7 +3975,7 @@ export default function GestionaleImportazioni() {
 
       {/* MENU BAR */}
       <div className="menubar" onMouseLeave={() => setOpenMenu(null)}>
-        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v2.6</div>
+        <div className="menubar-brand"><Database size={14} /> GESTIONALE IMPORT v2.8</div>
 
         {/* ARCHIVIO */}
         <div className={`menubar-item ${openMenu === 'archivio' ? 'open' : ''}`} onClick={() => setOpenMenu(openMenu === 'archivio' ? null : 'archivio')}>
@@ -4062,35 +4207,35 @@ export default function GestionaleImportazioni() {
               <div style={{ padding: 16, overflowY: 'auto' }}>
                 {/* Riepilogo numerico */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10, marginBottom: 16 }}>
-                  <div className="dash-card dash-blue">
+                  <div className="dash-card dash-blue" title={`Numero articoli totali in catalogo:\n${allItems.filter(i => i.origine === 'CN').length} dalla Cina + ${allItems.filter(i => i.origine === 'EU').length} dall'Europa`}>
                     <div className="dash-icon">📚</div>
                     <div>
                       <div className="dash-num">{fmtInt(allItems.length)}</div>
                       <div className="dash-label">Articoli in catalogo</div>
                     </div>
                   </div>
-                  <div className="dash-card dash-green">
+                  <div className="dash-card dash-green" title={`Fornitori configurati:\n${suppliers.filter(s => s.origine === 'CN').length} cinesi + ${suppliers.filter(s => s.origine === 'EU').length} europei`}>
                     <div className="dash-icon">🏭</div>
                     <div>
                       <div className="dash-num">{suppliers.length}</div>
                       <div className="dash-label">Fornitori configurati</div>
                     </div>
                   </div>
-                  <div className="dash-card dash-orange">
+                  <div className="dash-card dash-orange" title={`Listini Misure salvati\nIn Listini puoi creare ordini con misure e quantità,\nassociare un fornitore e calcolare costi totali`}>
                     <div className="dash-icon">📋</div>
                     <div>
                       <div className="dash-num">{sizeLists.length}</div>
                       <div className="dash-label">Listini misure</div>
                     </div>
                   </div>
-                  <div className="dash-card dash-purple">
+                  <div className="dash-card dash-purple" title={`Bolle doganali salvate\nLe bolle reali aggiornano i prezzi degli articoli\ncon valori effettivi (anziché stimati).`}>
                     <div className="dash-icon">📄</div>
                     <div>
                       <div className="dash-num">{bolle.length}</div>
                       <div className="dash-label">Bolle salvate</div>
                     </div>
                   </div>
-                  <div className="dash-card dash-cyan">
+                  <div className="dash-card dash-cyan" title={`Articoli nella tua Selezione corrente\nLa Selezione è il foglio di lavoro vivo dove\npreparare un ordine prima di generare la bolla.`}>
                     <div className="dash-icon">🛒</div>
                     <div>
                       <div className="dash-num">{selectedItems.length}</div>
@@ -4500,20 +4645,20 @@ export default function GestionaleImportazioni() {
                           <th className="num" onClick={() => toggleSort('prezzoOriginale')} title="Prezzo originale (editabile cliccando)">Prezzo Orig.</th>
                           {/* Colonne scomposte — solo se stiamo mostrando CN */}
                           {activeCatalogTab !== 'eu' && <>
-                            {isColumnVisible('fobEur') && <th className="num col-cn col-clickable" title="Click per nascondere · FOB EUR = USD / cambio" onClick={() => toggleColumnVisibility('fobEur')}>FOB € <span className="hide-x">×</span></th>}
-                            {isColumnVisible('noloPerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere · Nolo per pezzo" onClick={() => toggleColumnVisibility('noloPerPezzo')}>Nolo € <span className="hide-x">×</span></th>}
-                            {isColumnVisible('aggPerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere · Aggiustamento v.45" onClick={() => toggleColumnVisibility('aggPerPezzo')}>Aggiust € <span className="hide-x">×</span></th>}
-                            {isColumnVisible('valoreStatistico') && <th className="num col-cn col-clickable" title="Click per nascondere · Valore Statistico CIF" onClick={() => toggleColumnVisibility('valoreStatistico')}>CIF € <span className="hide-x">×</span></th>}
-                            {isColumnVisible('dazio') && <th className="num col-cn col-clickable" title="Click per nascondere · Dazio A00 (4,5%)" onClick={() => toggleColumnVisibility('dazio')}>Dazio € <span className="hide-x">×</span></th>}
-                            {isColumnVisible('tassePerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere · 9AJ Diritto Marittimo" onClick={() => toggleColumnVisibility('tassePerPezzo')}>9AJ € <span className="hide-x">×</span></th>}
-                            {isColumnVisible('iva') && <th className="num col-cn col-clickable" title="Click per nascondere · IVA B00 (22%)" onClick={() => toggleColumnVisibility('iva')}>IVA € <span className="hide-x">×</span></th>}
-                            {isColumnVisible('extraNoloPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere · Extra Nolo art.74" onClick={() => toggleColumnVisibility('extraNoloPerPezzo')}>ExtraNolo € <span className="hide-x">×</span></th>}
-                            {isColumnVisible('serviziIvaPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere · Servizi con IVA" onClick={() => toggleColumnVisibility('serviziIvaPerPezzo')}>Servizi € <span className="hide-x">×</span></th>}
-                            {isColumnVisible('commissioniPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere · Commissioni" onClick={() => toggleColumnVisibility('commissioniPerPezzo')}>Comm € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('fobEur') && <th className="num col-cn col-clickable" title={spiegaIntestazione('fobEur')} onClick={() => toggleColumnVisibility('fobEur')}>FOB € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('noloPerPezzo') && <th className="num col-cn col-clickable" title={spiegaIntestazione('noloPerPezzo')} onClick={() => toggleColumnVisibility('noloPerPezzo')}>Nolo € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('aggPerPezzo') && <th className="num col-cn col-clickable" title={spiegaIntestazione('aggPerPezzo')} onClick={() => toggleColumnVisibility('aggPerPezzo')}>Aggiust € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('valoreStatistico') && <th className="num col-cn col-clickable" title={spiegaIntestazione('valoreStatistico')} onClick={() => toggleColumnVisibility('valoreStatistico')}>CIF € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('dazio') && <th className="num col-cn col-clickable" title={spiegaIntestazione('dazio')} onClick={() => toggleColumnVisibility('dazio')}>Dazio € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('tassePerPezzo') && <th className="num col-cn col-clickable" title={spiegaIntestazione('tassePerPezzo')} onClick={() => toggleColumnVisibility('tassePerPezzo')}>9AJ € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('iva') && <th className="num col-cn col-clickable" title={spiegaIntestazione('iva')} onClick={() => toggleColumnVisibility('iva')}>IVA € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('extraNoloPerPezzo') && <th className="num col-cn col-extra col-clickable" title={spiegaIntestazione('extraNoloPerPezzo')} onClick={() => toggleColumnVisibility('extraNoloPerPezzo')}>ExtraNolo € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('serviziIvaPerPezzo') && <th className="num col-cn col-extra col-clickable" title={spiegaIntestazione('serviziIvaPerPezzo')} onClick={() => toggleColumnVisibility('serviziIvaPerPezzo')}>Servizi € <span className="hide-x">×</span></th>}
+                            {isColumnVisible('commissioniPerPezzo') && <th className="num col-cn col-extra col-clickable" title={spiegaIntestazione('commissioniPerPezzo')} onClick={() => toggleColumnVisibility('commissioniPerPezzo')}>Comm € <span className="hide-x">×</span></th>}
                           </>}
-                          {isColumnVisible('pfu') && <th className="num col-clickable" title="Click per nascondere · PFU" onClick={() => toggleColumnVisibility('pfu')}>PFU € <span className="hide-x">×</span></th>}
-                          {activeCatalogTab !== 'eu' && <th className="num" title="Capacità container 40'HQ per questa misura (in pezzi)">Cap.40'HQ</th>}
-                          <th className="num col-finale" onClick={() => toggleSort('prezzoFinale')}>TOTALE €</th>
+                          {isColumnVisible('pfu') && <th className="num col-clickable" title={spiegaIntestazione('pfu')} onClick={() => toggleColumnVisibility('pfu')}>PFU € <span className="hide-x">×</span></th>}
+                          {activeCatalogTab !== 'eu' && <th className="num" title="Capacità container 40'HQ per questa misura (in pezzi)\nFonte: lookup Arivo (177 misure) o stima per misure simili">Cap.40'HQ</th>}
+                          <th className="num col-finale" onClick={() => toggleSort('prezzoFinale')} title={spiegaIntestazione('costoFinale')}>TOTALE €</th>
                           <th style={{ width: 28, cursor: 'default' }} title="Aggiungi al pannello confronto">⊕</th>
                           <th style={{ width: 28, cursor: 'default' }} title="Modifica completa">✏️</th>
                           <th style={{ width: 28, cursor: 'default' }} title="Confronto Scenari (with/without dazio, container...)">🔬</th>
@@ -4533,7 +4678,7 @@ export default function GestionaleImportazioni() {
                               </td>
                               <td><span className={`tag-origine ${item.origine}`}>{item.origine}</span></td>
                               <td style={{ fontWeight: 600 }}>{item.marca}</td>
-                              <td>{item.modello || '—'}</td>
+                              <td>{item.modello || '—'} {item.stagione && item.origine === 'CN' && <span title={STAGIONE_LABELS[item.stagione]?.label || item.stagione} style={{ fontSize: 10, marginLeft: 4 }}>{STAGIONE_LABELS[item.stagione]?.icon || ''}</span>}</td>
                               <td><span className="tag-mis">{item.misura || '—'}</span></td>
                               {activeCatalogTab === 'all' && <td><span className="tag-sup">{item.supplierName}</span></td>}
                               <td className="num" onClick={e => e.stopPropagation()}>
@@ -4557,18 +4702,20 @@ export default function GestionaleImportazioni() {
                               </td>
                               {/* Colonne scomposte */}
                               {activeCatalogTab !== 'eu' && <>
-                                {item.origine === 'CN' && sc ? <>
-                                  {isColumnVisible('fobEur') && <td className="num col-cn">{fmtEur(sc.fobEur)}</td>}
-                                  {isColumnVisible('noloPerPezzo') && <td className="num col-cn">{fmtEur(sc.noloPerPezzo)}</td>}
-                                  {isColumnVisible('aggPerPezzo') && <td className="num col-cn">{fmtEur(sc.aggPerPezzo)}</td>}
-                                  {isColumnVisible('valoreStatistico') && <td className="num col-cn col-cif"><b>{fmtEur(sc.valoreStatistico)}</b></td>}
-                                  {isColumnVisible('dazio') && <td className="num col-cn">{fmtEur(sc.dazio)}</td>}
-                                  {isColumnVisible('tassePerPezzo') && <td className="num col-cn">{fmtEur(sc.tassePerPezzo)}</td>}
-                                  {isColumnVisible('iva') && <td className="num col-cn">{fmtEur(sc.iva)}</td>}
-                                  {isColumnVisible('extraNoloPerPezzo') && <td className="num col-cn col-extra">{fmtEur(sc.extraNoloPerPezzo)}</td>}
-                                  {isColumnVisible('serviziIvaPerPezzo') && <td className="num col-cn col-extra">{fmtEur(sc.serviziIvaPerPezzo)}</td>}
-                                  {isColumnVisible('commissioniPerPezzo') && <td className="num col-cn col-extra">{fmtEur(sc.commissioniPerPezzo)}</td>}
-                                </> : <>
+                                {item.origine === 'CN' && sc ? (() => {
+                                  const effP = getEffectiveParams(item.supplierId);
+                                  return <>
+                                  {isColumnVisible('fobEur') && <td className="num col-cn" title={spiegaCalcolo('fobEur', sc, effP)}>{fmtEur(sc.fobEur)}</td>}
+                                  {isColumnVisible('noloPerPezzo') && <td className="num col-cn" title={spiegaCalcolo('noloPerPezzo', sc, effP)}>{fmtEur(sc.noloPerPezzo)}</td>}
+                                  {isColumnVisible('aggPerPezzo') && <td className="num col-cn" title={spiegaCalcolo('aggPerPezzo', sc, effP)}>{fmtEur(sc.aggPerPezzo)}</td>}
+                                  {isColumnVisible('valoreStatistico') && <td className="num col-cn col-cif" title={spiegaCalcolo('valoreStatistico', sc, effP)}><b>{fmtEur(sc.valoreStatistico)}</b></td>}
+                                  {isColumnVisible('dazio') && <td className="num col-cn" title={spiegaCalcolo('dazio', sc, effP)}>{fmtEur(sc.dazio)}</td>}
+                                  {isColumnVisible('tassePerPezzo') && <td className="num col-cn" title={spiegaCalcolo('tassePerPezzo', sc, effP)}>{fmtEur(sc.tassePerPezzo)}</td>}
+                                  {isColumnVisible('iva') && <td className="num col-cn" title={spiegaCalcolo('iva', sc, effP)}>{fmtEur(sc.iva)}</td>}
+                                  {isColumnVisible('extraNoloPerPezzo') && <td className="num col-cn col-extra" title={spiegaCalcolo('extraNoloPerPezzo', sc, effP)}>{fmtEur(sc.extraNoloPerPezzo)}</td>}
+                                  {isColumnVisible('serviziIvaPerPezzo') && <td className="num col-cn col-extra" title={spiegaCalcolo('serviziIvaPerPezzo', sc, effP)}>{fmtEur(sc.serviziIvaPerPezzo)}</td>}
+                                  {isColumnVisible('commissioniPerPezzo') && <td className="num col-cn col-extra" title={spiegaCalcolo('commissioniPerPezzo', sc, effP)}>{fmtEur(sc.commissioniPerPezzo)}</td>}
+                                </>; })() : <>
                                   {/* Articolo EU: colonne CN vuote */}
                                   {isColumnVisible('fobEur') && <td className="num col-cn">—</td>}
                                   {isColumnVisible('noloPerPezzo') && <td className="num col-cn">—</td>}
@@ -4582,7 +4729,7 @@ export default function GestionaleImportazioni() {
                                   {isColumnVisible('commissioniPerPezzo') && <td className="num col-cn col-extra">—</td>}
                                 </>}
                               </>}
-                              {isColumnVisible('pfu') && <td className="num">{fmtEur(sc ? sc.pfuPezzo : item.pfu)}</td>}
+                              {isColumnVisible('pfu') && <td className="num" title={sc ? spiegaCalcolo('pfuPezzo', sc, getEffectiveParams(item.supplierId)) : ''}>{fmtEur(sc ? sc.pfuPezzo : item.pfu)}</td>}
                               {activeCatalogTab !== 'eu' && (
                                 <td className="num" style={{ background: '#e1f5fe', color: '#01579b' }}>
                                   {item.origine === 'CN' ? (
@@ -4844,18 +4991,18 @@ export default function GestionaleImportazioni() {
                           <th>Fornitore</th>
                           <th className="num" style={{ width: 60 }}>Q.tà</th>
                           <th className="num">P.Orig.</th>
-                          {isColumnVisible('fobEur') && <th className="num col-cn col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('fobEur')}>FOB € <span className="hide-x">×</span></th>}
-                          {isColumnVisible('noloPerPezzo') && <th className="num col-cn col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('noloPerPezzo')}>Nolo € <span className="hide-x">×</span></th>}
-                          {isColumnVisible('valoreStatistico') && <th className="num col-cn col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('valoreStatistico')}>CIF € <span className="hide-x">×</span></th>}
-                          {isColumnVisible('dazio') && <th className="num col-cn col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('dazio')}>Dazio € <span className="hide-x">×</span></th>}
-                          {isColumnVisible('iva') && <th className="num col-cn col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('iva')}>IVA € <span className="hide-x">×</span></th>}
-                          {isColumnVisible('extraNoloPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('extraNoloPerPezzo')}>Extra € <span className="hide-x">×</span></th>}
-                          {isColumnVisible('serviziIvaPerPezzo') && <th className="num col-cn col-extra col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('serviziIvaPerPezzo')}>Servizi € <span className="hide-x">×</span></th>}
-                          {isColumnVisible('pfu') && <th className="num col-clickable" title="Click per nascondere" onClick={() => toggleColumnVisibility('pfu')}>PFU € <span className="hide-x">×</span></th>}
-                          <th className="num col-finale">Costo /pz</th>
-                          <th className="num col-finale">Subtotale</th>
-                          <th className="num col-finale">Vendita /pz</th>
-                          <th className="num col-finale">Vend. tot.</th>
+                          {isColumnVisible('fobEur') && <th className="num col-cn col-clickable" title={spiegaIntestazione('fobEur')} onClick={() => toggleColumnVisibility('fobEur')}>FOB € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('noloPerPezzo') && <th className="num col-cn col-clickable" title={spiegaIntestazione('noloPerPezzo')} onClick={() => toggleColumnVisibility('noloPerPezzo')}>Nolo € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('valoreStatistico') && <th className="num col-cn col-clickable" title={spiegaIntestazione('valoreStatistico')} onClick={() => toggleColumnVisibility('valoreStatistico')}>CIF € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('dazio') && <th className="num col-cn col-clickable" title={spiegaIntestazione('dazio')} onClick={() => toggleColumnVisibility('dazio')}>Dazio € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('iva') && <th className="num col-cn col-clickable" title={spiegaIntestazione('iva')} onClick={() => toggleColumnVisibility('iva')}>IVA € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('extraNoloPerPezzo') && <th className="num col-cn col-extra col-clickable" title={spiegaIntestazione('extraNoloPerPezzo')} onClick={() => toggleColumnVisibility('extraNoloPerPezzo')}>Extra € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('serviziIvaPerPezzo') && <th className="num col-cn col-extra col-clickable" title={spiegaIntestazione('serviziIvaPerPezzo')} onClick={() => toggleColumnVisibility('serviziIvaPerPezzo')}>Servizi € <span className="hide-x">×</span></th>}
+                          {isColumnVisible('pfu') && <th className="num col-clickable" title={spiegaIntestazione('pfu')} onClick={() => toggleColumnVisibility('pfu')}>PFU € <span className="hide-x">×</span></th>}
+                          <th className="num col-finale" title={spiegaIntestazione('costoFinale')}>Costo /pz</th>
+                          <th className="num col-finale" title="Subtotale = Costo /pz × Quantità richiesta">Subtotale</th>
+                          <th className="num col-finale" title="Vendita /pz = Costo Finale × Markup">Vendita /pz</th>
+                          <th className="num col-finale" title="Vendita totale = Vendita /pz × Quantità richiesta">Vend. tot.</th>
                           <th style={{ width: 32 }}></th>
                         </tr>
                       </thead>
@@ -5203,7 +5350,32 @@ export default function GestionaleImportazioni() {
                         </div>
                       </div>
 
-                      {/* === BANNER FILL CONTAINER LIVE (modalità qty) === */}
+                      {/* v2.7 — FILTRI per il calcolo costi (solo se c'è fornitore selezionato) */}
+                      {editingSizeList.supplierId && (
+                        <div style={{ background: '#e8eaf6', border: '1px solid #5c6bc0', padding: 8, marginBottom: 12, display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 10, alignItems: 'end' }}>
+                          <div className="fld">
+                            <label>🏷 Filtra per Stagione</label>
+                            <select className="ctl" value={editingSizeList.filtroStagione || 'any'} onChange={e => setEditingSizeList({ ...editingSizeList, filtroStagione: e.target.value })}>
+                              <option value="any">Tutte le stagioni</option>
+                              <option value="estivo">☀️ Solo Estivi</option>
+                              <option value="invernale">❄️ Solo Invernali</option>
+                              <option value="allseason">🍃 Solo All-Season</option>
+                            </select>
+                          </div>
+                          <div className="fld">
+                            <label>💰 Filtra per Fascia Prezzo</label>
+                            <select className="ctl" value={editingSizeList.filtroFasciaPrezzo || 'any'} onChange={e => setEditingSizeList({ ...editingSizeList, filtroFasciaPrezzo: e.target.value })}>
+                              <option value="any">Tutte le fasce</option>
+                              <option value="eco">💰 Solo Economici (1° terzo)</option>
+                              <option value="medio">💵 Solo Medi (2° terzo)</option>
+                              <option value="alto">💎 Solo Alti (3° terzo)</option>
+                            </select>
+                          </div>
+                          <div style={{ fontSize: 10, color: '#3f51b5', fontStyle: 'italic', maxWidth: 260 }}>
+                            💡 Per ogni misura del listino, viene scelto l'<b>articolo più economico</b> tra quelli che rispettano i filtri.
+                          </div>
+                        </div>
+                      )}
                       {sizeListInputMode === 'qty' && (() => {
                         const { fill, qtyTot, suggerimento } = calcSizeListFill(editingSizeList);
                         const fillPct = fill * 100;
@@ -5334,24 +5506,34 @@ export default function GestionaleImportazioni() {
                           <div style={{ marginTop: 14, border: '2px solid #0d47a1', background: '#e3f2fd', padding: 12 }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
                               <h3 style={{ margin: 0, color: '#0d47a1' }}>💰 Costo Totale Listino — {c.supplierName}</h3>
-                              <div style={{ fontSize: 11, color: '#37474f' }}>
-                                {c.misureMatched}/{editingSizeList.items.length} misure trovate
-                                {c.misureMissing.length > 0 && <span style={{ color: '#c62828', marginLeft: 8 }}>· ⚠ {c.misureMissing.length} senza prezzo</span>}
+                              <div style={{ fontSize: 11, color: '#37474f', display: 'flex', gap: 8, alignItems: 'center' }}>
+                                {c.filtroStagione !== 'any' && (
+                                  <span style={{ background: '#5c6bc0', color: '#fff', padding: '2px 6px', borderRadius: 2, fontSize: 10 }}>
+                                    {STAGIONE_LABELS[c.filtroStagione]?.icon} {STAGIONE_LABELS[c.filtroStagione]?.label}
+                                  </span>
+                                )}
+                                {c.filtroFascia !== 'any' && (
+                                  <span style={{ background: '#5c6bc0', color: '#fff', padding: '2px 6px', borderRadius: 2, fontSize: 10 }}>
+                                    {FASCIA_PREZZO_LABELS[c.filtroFascia]}
+                                  </span>
+                                )}
+                                <span>{c.misureMatched}/{editingSizeList.items.length} misure trovate</span>
+                                {c.misureMissing.length > 0 && <span style={{ color: '#c62828' }}>· ⚠ {c.misureMissing.length} senza prezzo</span>}
                               </div>
                             </div>
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6, marginBottom: 10 }}>
-                              <div className="cost-card"><div className="cost-card-label">FOB</div><div className="cost-card-val">€ {fmtEur(c.totFob)}</div></div>
-                              <div className="cost-card"><div className="cost-card-label">Nolo</div><div className="cost-card-val">€ {fmtEur(c.totNolo)}</div></div>
-                              <div className="cost-card"><div className="cost-card-label">CIF (v.46)</div><div className="cost-card-val">€ {fmtEur(c.totCif)}</div></div>
-                              <div className="cost-card"><div className="cost-card-label">Dazio</div><div className="cost-card-val">€ {fmtEur(c.totDazio)}</div></div>
-                              <div className="cost-card"><div className="cost-card-label">IVA</div><div className="cost-card-val">€ {fmtEur(c.totIva)}</div></div>
-                              <div className="cost-card"><div className="cost-card-label">Extra art.74</div><div className="cost-card-val">€ {fmtEur(c.totExtra)}</div></div>
-                              <div className="cost-card"><div className="cost-card-label">Servizi IVA</div><div className="cost-card-val">€ {fmtEur(c.totServizi)}</div></div>
-                              <div className="cost-card"><div className="cost-card-label">Commissioni</div><div className="cost-card-val">€ {fmtEur(c.totComm)}</div></div>
-                              <div className="cost-card"><div className="cost-card-label">PFU</div><div className="cost-card-val">€ {fmtEur(c.totPfu)}</div></div>
-                              <div className="cost-card cost-card-tot"><div className="cost-card-label">/PEZZO</div><div className="cost-card-val">€ {fmtEur(c.costoMedioPezzo)}</div></div>
+                              <div className="cost-card" title={`💵 FOB Totale\n= Σ (FOB EUR /pz × Q.tà) per ogni misura\n${c.qtyTot} pezzi totali\n= € ${fmtEur(c.totFob)}`}><div className="cost-card-label">FOB</div><div className="cost-card-val">€ {fmtEur(c.totFob)}</div></div>
+                              <div className="cost-card" title={`🚢 Nolo Totale\n= Σ (Nolo /pz × Q.tà) per ogni misura\nNolo è ripartito su tutto il container\n= € ${fmtEur(c.totNolo)}`}><div className="cost-card-label">Nolo</div><div className="cost-card-val">€ {fmtEur(c.totNolo)}</div></div>
+                              <div className="cost-card" title={`📦 CIF Totale (voce 46 DAU)\n= Σ (CIF /pz × Q.tà) per ogni misura\nÈ la base imponibile per il dazio\n= € ${fmtEur(c.totCif)}`}><div className="cost-card-label">CIF (v.46)</div><div className="cost-card-val">€ {fmtEur(c.totCif)}</div></div>
+                              <div className="cost-card" title={`🏛 Dazio Totale\n= CIF × 4,5% (TARIC 4011.10.00)\n= ${fmtEur(c.totCif)} × 4,5%\n= € ${fmtEur(c.totDazio)}`}><div className="cost-card-label">Dazio</div><div className="cost-card-val">€ {fmtEur(c.totDazio)}</div></div>
+                              <div className="cost-card" title={`💶 IVA Totale\n= (CIF + Dazio + 9AJ) × 22%\n= € ${fmtEur(c.totIva)}`}><div className="cost-card-label">IVA</div><div className="cost-card-val">€ {fmtEur(c.totIva)}</div></div>
+                              <div className="cost-card" title={`📋 Extra art.74 (THC + Dogana + Fuel + Addiz CM)\nIVA già assolta sul nolo, non si paga di nuovo\n= € ${fmtEur(c.totExtra)}`}><div className="cost-card-label">Extra art.74</div><div className="cost-card-val">€ {fmtEur(c.totExtra)}</div></div>
+                              <div className="cost-card" title={`🚛 Servizi con IVA (Delivery + Trasporto + Fuel% + IVA Sped)\n= € ${fmtEur(c.totServizi)}`}><div className="cost-card-label">Servizi IVA</div><div className="cost-card-val">€ {fmtEur(c.totServizi)}</div></div>
+                              <div className="cost-card" title={`💼 Commissioni Totali\n= € ${fmtEur(c.totComm)}`}><div className="cost-card-label">Commissioni</div><div className="cost-card-val">€ {fmtEur(c.totComm)}</div></div>
+                              <div className="cost-card" title={`♻ PFU Totale (Pneumatici Fuori Uso)\n= Σ (PFU per fascia × Q.tà) per ogni misura\n= € ${fmtEur(c.totPfu)}`}><div className="cost-card-label">PFU</div><div className="cost-card-val">€ {fmtEur(c.totPfu)}</div></div>
+                              <div className="cost-card cost-card-tot" title={`💰 Costo medio per pezzo\n= Costo Totale ÷ Q.tà tot\n= ${fmtEur(c.costoTotale)} ÷ ${c.qtyTot}\n= € ${fmtEur(c.costoMedioPezzo)} /pz`}><div className="cost-card-label">/PEZZO</div><div className="cost-card-val">€ {fmtEur(c.costoMedioPezzo)}</div></div>
                             </div>
-                            <div style={{ background: 'linear-gradient(to right, #0d47a1, #1976d2)', color: '#fff', padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div style={{ background: 'linear-gradient(to right, #0d47a1, #1976d2)', color: '#fff', padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }} title={`💰 COSTO TOTALE ORDINE\n= FOB + Nolo + Aggiust + Dazio + 9AJ + IVA + Extra + Servizi + Comm + PFU\n× ${c.qtyTot} pezzi\n= € ${fmtEur(c.costoTotale)}`}>
                               <span style={{ fontSize: 14, fontWeight: 700 }}>COSTO TOTALE ORDINE ({c.qtyTot} pezzi)</span>
                               <span style={{ fontSize: 22, fontWeight: 800 }}>€ {fmtEur(c.costoTotale)}</span>
                             </div>
@@ -6773,6 +6955,14 @@ export default function GestionaleImportazioni() {
                 <div className="fld">
                   <label>PFU € (override)</label>
                   <input className="ctl" type="number" step="0.05" value={editingItem.pfu || 0} onChange={e => setEditingItem({ ...editingItem, pfu: parseFloat(e.target.value) || 0 })} />
+                </div>
+                <div className="fld">
+                  <label>Stagione (auto-rilevata, modificabile) <span style={{fontSize:9,color:'#1976d2'}}>v2.7</span></label>
+                  <select className="ctl" value={editingItem.stagione || 'estivo'} onChange={e => setEditingItem({ ...editingItem, stagione: e.target.value })}>
+                    <option value="estivo">☀️ Estivo</option>
+                    <option value="invernale">❄️ Invernale</option>
+                    <option value="allseason">🍃 All-Season</option>
+                  </select>
                 </div>
               </div>
               <div style={{ marginTop: 12, padding: 8, background: '#fff8e1', fontSize: 11, color: '#bf360c' }}>
